@@ -86,7 +86,7 @@ class Channel {
  public:
   void set_name(const std::string &name) { this->name_ = name; };
   std::string get_name() const { return this->name_; };
-  void set_psk(const psk_t &psk) { this->psk_ = psk; };
+  void set_psk(const psk_t &psk);
   psk_t get_psk() const { return this->psk_; };
   void generate_hash();
   void set_hash(uint8_t hash) { this->hash_ = hash; };

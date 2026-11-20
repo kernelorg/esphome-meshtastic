@@ -37,6 +37,29 @@ static uint8_t xor_hash(const uint8_t *p, size_t len)
     return code;
 }
 
+// Same expansion as Meshtastic Channels::getKey(): a 1-byte PSK selects the
+// well-known default key (0 = no encryption), short keys are zero padded.
+static const uint8_t DEFAULT_PSK[16] = {0xd4, 0xf1, 0xbb, 0x3a, 0x20, 0x29, 0x07, 0x59,
+                                        0xf0, 0xbc, 0xff, 0xab, 0xcf, 0x4e, 0x69, 0x01};
+
+void Channel::set_psk(const psk_t &psk) {
+  psk_t k = psk;
+  if (k.size() == 1) {
+    uint8_t idx = k[0];
+    if (idx == 0) {
+      k.clear();
+    } else {
+      k.assign(DEFAULT_PSK, DEFAULT_PSK + sizeof(DEFAULT_PSK));
+      k.back() += idx - 1;
+    }
+  } else if (!k.empty() && k.size() < 16) {
+    k.resize(16, 0);
+  } else if (k.size() > 16 && k.size() < 32) {
+    k.resize(32, 0);
+  }
+  this->psk_ = k;
+}
+
 void Channel::generate_hash()
 {
     psk_t k = get_psk();
@@ -680,7 +703,10 @@ bool Meshtastic::transmit_packet_encrypt(meshtastic_MeshPacket &mp, bool want_re
     }
     else
     {
-      aes_decrypt_meshtastic_payload(key.data(), key.size() * 8, mp.id, mp.from, bytes, mp.encrypted.bytes, numbytes);
+      if (!aes_decrypt_meshtastic_payload(key.data(), key.size() * 8, mp.id, mp.from, bytes, mp.encrypted.bytes, numbytes)) {
+        ESP_LOGE(TAG, "Encryption failed, packet not sent");  // never fall back to plaintext
+        return false;
+      }
       ESP_LOGD(TAG, "encrypted payload %s", format_hex_pretty(mp.encrypted.bytes, numbytes, ',', true).c_str());
     }
   }
@@ -935,7 +961,8 @@ void Meshtastic::handle_received_packet(meshtastic_MeshPacket &mp) {
     }
     else
     {
-      aes_decrypt_meshtastic_payload(key.data(), key.size() * 8, mp.id, mp.from, mp.encrypted.bytes, decrypted_data, payload_len);
+      if (!aes_decrypt_meshtastic_payload(key.data(), key.size() * 8, mp.id, mp.from, mp.encrypted.bytes, decrypted_data, payload_len))
+        return;
       ESP_LOGD(TAG, "decrypted payload %s", format_hex_pretty(decrypted_data, payload_len, ',', true).c_str());
     }
   }
