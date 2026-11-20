@@ -45,6 +45,9 @@ CONF_ADDRESSES = "addresses"
 CONF_BRIDGE_MODE = "bridge_mode"
 CONF_TO = "to"
 CONF_HOPLIMIT = "hop_limit"
+CONF_ROLE = "role"
+CONF_SLOT_TIME = "slot_time"
+ROLES = {"CLIENT_MUTE": 0, "CLIENT": 1, "ROUTER": 2}
 CONF_IGNOREMQTT = "ignore_mqtt"
 CONF_OKTOMQTT = "ok_to_mqtt"
 CONF_BROADCAST_INTERVAL = "broadcast_interval"
@@ -196,6 +199,9 @@ CONFIG_SCHEMA = cv.All(
                     cv.use_id(sx126x), cv.use_id(sx127x)
                 ),
                 cv.Optional(CONF_HOPLIMIT, 7): cv.int_range(0, 7),
+                cv.Optional(CONF_ROLE, default="CLIENT_MUTE"): cv.enum(ROLES, upper=True),
+                # Meshtastic slot time for the preset (SHORT_FAST: 9 ms; see device log "Slot time")
+                cv.Optional(CONF_SLOT_TIME, default="9ms"): cv.positive_time_period_milliseconds,
                 cv.Optional(CONF_HW_MODEL, 59): cv.int_,
                 cv.Optional(CONF_IGNOREMQTT, True): cv.boolean,
                 cv.Optional(CONF_OKTOMQTT, False): cv.boolean,
@@ -231,6 +237,8 @@ async def to_code(configs):
             cg.add(var.set_lora(loradev))
 
         cg.add(var.set_hop_limit(config[CONF_HOPLIMIT]))
+        cg.add(var.set_role(config[CONF_ROLE]))
+        cg.add(var.set_slot_time(config[CONF_SLOT_TIME].total_milliseconds))
         cg.add(var.set_ignore_mqtt(config[CONF_IGNOREMQTT]))
         cg.add(var.set_ok_to_mqtt(config[CONF_OKTOMQTT]))
         cg.add(var.set_hw_model(config[CONF_HW_MODEL]))

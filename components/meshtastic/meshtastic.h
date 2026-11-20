@@ -54,6 +54,20 @@ typedef struct {
 
 using psk_t = std::vector<uint8_t>;
 
+// Rebroadcast behaviour, mirrors Meshtastic device roles
+enum RelayRole : uint8_t {
+  RELAY_ROLE_CLIENT_MUTE = 0,  // never rebroadcast
+  RELAY_ROLE_CLIENT = 1,       // rebroadcast, cancel if another node relays first
+  RELAY_ROLE_ROUTER = 2,       // rebroadcast with priority, never cancel
+};
+
+struct PendingRelay {
+  uint32_t due;
+  NodeNum from;
+  PacketId id;
+  std::vector<uint8_t> raw;
+};
+
 //    uint8_t default_secret[16] = {0xd4, 0xf1, 0xbb, 0x3a, 0x20, 0x29, 0x07, 0x59, 0xf0, 0xbc, 0xff, 0xab, 0xcf, 0x4e, 0x69, 0x01};
 
 struct Node {
@@ -154,6 +168,15 @@ class Meshtastic : public Component
   Node* get_node_by_num(const NodeNum num);
 
   uint8_t hop_limit_ = 7;
+  uint8_t relay_role_ = RELAY_ROLE_CLIENT_MUTE;
+  uint32_t slot_time_ms_ = 9;
+  uint32_t relay_tx_count_ = 0;
+  uint32_t relay_cancel_count_ = 0;
+  std::vector<PendingRelay> pending_relays_;
+  void schedule_relay_(const std::vector<uint8_t> &packet, const meshtastic_MeshPacket &mp, float snr);
+  void cancel_relay_(NodeNum from, PacketId id);
+  void process_relays_();
+  bool transmit_raw_(const std::vector<uint8_t> &packet);
   bool ignore_mqtt_ = true;
   bool ok_to_mqtt_ = false;
 #if defined(USE_SOCKET_IMPL_BSD_SOCKETS) || defined(USE_SOCKET_IMPL_LWIP_SOCKETS)
@@ -210,6 +233,8 @@ class Meshtastic : public Component
   };
   void set_hop_limit(uint8_t hop_limit) { this->hop_limit_ = hop_limit; };
   void set_ignore_mqtt(bool ignore_mqtt) { this->ignore_mqtt_ = ignore_mqtt; };
+  void set_role(uint8_t role) { this->relay_role_ = role; };
+  void set_slot_time(uint32_t ms) { this->slot_time_ms_ = ms; };
   void set_ok_to_mqtt(bool ok_to_mqtt) { this->ok_to_mqtt_ = ok_to_mqtt; };
   void set_node_broadcast_interval(uint32_t broadcast_interval) { this->node_broadcast_interval_ = broadcast_interval; };
   void set_position_broadcast_interval(uint32_t broadcast_interval) { this->position_broadcast_interval_ = broadcast_interval; };

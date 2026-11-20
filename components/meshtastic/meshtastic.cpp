@@ -259,7 +259,11 @@ void Meshtastic::setup() {
   snprintf(owner.id, sizeof(owner.id), "!%08x", node_num_);
   if(owner.hw_model == meshtastic_HardwareModel_UNSET)
     owner.hw_model = meshtastic_HardwareModel_DIY_V1;
-  owner.role = meshtastic_Config_DeviceConfig_Role_CLIENT_MUTE;
+  switch (this->relay_role_) {
+    case RELAY_ROLE_ROUTER: owner.role = meshtastic_Config_DeviceConfig_Role_ROUTER; break;
+    case RELAY_ROLE_CLIENT: owner.role = meshtastic_Config_DeviceConfig_Role_CLIENT; break;
+    default: owner.role = meshtastic_Config_DeviceConfig_Role_CLIENT_MUTE; break;
+  }
   memcpy(owner.macaddr, mac, sizeof(owner.macaddr));
   if(owner.long_name[0] == '\0')
     snprintf(owner.long_name, sizeof(owner.long_name), "ESPHome %04X", node_num_ & 0xFFFF);
@@ -366,6 +370,7 @@ void Meshtastic::setup() {
 }
 
 void Meshtastic::loop() {
+  this->process_relays_();
 #if defined(USE_SOCKET_IMPL_BSD_SOCKETS) || defined(USE_SOCKET_IMPL_LWIP_SOCKETS)
   if(this->use_udp_) {
     auto buf = std::vector<uint8_t>(meshtastic_MeshPacket_size);
@@ -459,7 +464,10 @@ bool Meshtastic::transmit_radio_packet(meshtastic_MeshPacket *mp) {
   }
   memcpy(radio_buffer.payload, mp->encrypted.bytes, mp->encrypted.size);
   std::vector<uint8_t> packet(reinterpret_cast<const uint8_t*>(&radio_buffer), reinterpret_cast<const uint8_t*>(&radio_buffer) + sizeof(PacketHeader) + mp->encrypted.size);
+  return this->transmit_raw_(packet);
+}
 
+bool Meshtastic::transmit_raw_(const std::vector<uint8_t> &packet) {
 #ifdef USE_SX126X
   if(this->sx126x_) {
     ESP_LOGD(TAG, "transmit packet SX126X");
@@ -1094,11 +1102,88 @@ void Meshtastic::on_packet(const std::vector<uint8_t> &packet, float rssi, float
   mp.rx_snr = snr;
   mp.rx_rssi = rssi;
   mp.rx_time = ::time(nullptr);
+
+  // Flood routing: decide before handle_received_packet(), which records the packet as seen
+  bool already_seen = this->packet_history_.wasSeenRecently(mp, false);
+  if (already_seen)
+    this->cancel_relay_(mp.from, mp.id);
+  bool relay = !already_seen && this->relay_role_ != RELAY_ROLE_CLIENT_MUTE && mp.id != 0 &&
+               mp.from != this->node_num_ && mp.to != this->node_num_ && mp.hop_limit > 0 &&
+               (mp.next_hop == 0 || mp.next_hop == (this->node_num_ & 0xFF)) &&
+               !(this->ignore_mqtt_ && mp.via_mqtt);
+
   handle_received_packet(mp);
+  if (!already_seen)
+    this->packet_history_.wasSeenRecently(mp, true);  // also undecodable (foreign channel / PKI) packets
+  if (relay)
+    this->schedule_relay_(packet, mp, snr);
   if(this->bridge_mode_ && this->use_udp_) {
     transmit_udp_packet(&mp);
   }
   pb_release(&meshtastic_MeshPacket_msg, &mp);
+}
+
+// Contention window as in Meshtastic RadioInterface::getTxDelayMsecWeighted():
+// weaker SNR -> shorter delay, so the farthest receiver relays first.
+static constexpr float RELAY_SNR_MIN = -20.0f;
+static constexpr float RELAY_SNR_MAX = 10.0f;
+static constexpr uint8_t RELAY_CW_MIN = 3;
+static constexpr uint8_t RELAY_CW_MAX = 8;
+static constexpr size_t MAX_PENDING_RELAYS = 16;
+
+void Meshtastic::schedule_relay_(const std::vector<uint8_t> &packet, const meshtastic_MeshPacket &mp, float snr) {
+  float s = std::max(RELAY_SNR_MIN, std::min(RELAY_SNR_MAX, snr));
+  uint8_t cw = RELAY_CW_MIN + (uint8_t) ((s - RELAY_SNR_MIN) * (RELAY_CW_MAX - RELAY_CW_MIN) / (RELAY_SNR_MAX - RELAY_SNR_MIN));
+  uint32_t delay;
+  if (this->relay_role_ == RELAY_ROLE_ROUTER)
+    delay = (random_uint32() % (2 * cw)) * this->slot_time_ms_;
+  else
+    delay = 2 * RELAY_CW_MAX * this->slot_time_ms_ + (random_uint32() % (1u << cw)) * this->slot_time_ms_;
+
+  PendingRelay r{millis() + delay, mp.from, mp.id, packet};
+  auto *hdr = reinterpret_cast<PacketHeader *>(r.raw.data());
+  hdr->flags = (hdr->flags & ~PACKET_FLAGS_HOP_LIMIT_MASK) | ((mp.hop_limit - 1) & PACKET_FLAGS_HOP_LIMIT_MASK);
+  hdr->relay_node = this->node_num_ & 0xFF;
+  hdr->next_hop = 0;  // no route table: continue as flood
+
+  if (this->pending_relays_.size() >= MAX_PENDING_RELAYS) {
+    ESP_LOGW(TAG, "Relay queue full, dropping id=%08" PRIx32, this->pending_relays_.front().id);
+    this->pending_relays_.erase(this->pending_relays_.begin());
+  }
+  ESP_LOGD(TAG, "Relay id=%08" PRIx32 " fr=%08" PRIx32 " hop_limit %u->%u in %" PRIu32 " ms (snr %.1f)", mp.id, mp.from,
+           mp.hop_limit, mp.hop_limit - 1, delay, snr);
+  this->pending_relays_.push_back(std::move(r));
+}
+
+void Meshtastic::cancel_relay_(NodeNum from, PacketId id) {
+  if (this->relay_role_ == RELAY_ROLE_ROUTER)
+    return;
+  for (auto it = this->pending_relays_.begin(); it != this->pending_relays_.end(); ++it) {
+    if (it->from == from && it->id == id) {
+      ESP_LOGD(TAG, "Relay id=%08" PRIx32 " cancelled, already relayed by another node", id);
+      this->pending_relays_.erase(it);
+      this->relay_cancel_count_++;
+      return;
+    }
+  }
+}
+
+void Meshtastic::process_relays_() {
+  uint32_t now = millis();
+  for (auto it = this->pending_relays_.begin(); it != this->pending_relays_.end();) {
+    if ((int32_t) (now - it->due) >= 0) {
+      if (this->transmit_raw_(it->raw)) {
+        this->relay_tx_count_++;
+        ESP_LOGI(TAG, "Relayed id=%08" PRIx32 " fr=%08" PRIx32 " (relayed %" PRIu32 ", cancelled %" PRIu32 ")", it->id,
+                 it->from, this->relay_tx_count_, this->relay_cancel_count_);
+      } else {
+        ESP_LOGW(TAG, "Relay id=%08" PRIx32 " transmit failed", it->id);
+      }
+      it = this->pending_relays_.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 }  // namespace meshtastic
