@@ -351,6 +351,9 @@ void Meshtastic::client_send_config_(uint32_t nonce) {
       reset(meshtastic_FromRadio_channel_tag);
       auto &ch = fr->channel;
       ch.index = i;
+      // settings is always present, also for disabled slots (clients read its fields unconditionally)
+      ch.has_settings = true;
+      ch.settings.has_module_settings = true;
       if (i < (int) this->channels_.size()) {
         const Channel &c = this->channels_[i];
         ch.role = i == 0 ? meshtastic_Channel_Role_PRIMARY : meshtastic_Channel_Role_SECONDARY;
