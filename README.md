@@ -236,6 +236,8 @@ For additional configuration examples and a complete working setup, see [`meshta
 | `ignore_mqtt` | boolean | true | Ignore MQTT-forwarded packets |
 | `ok_to_mqtt` | boolean | false | Allow forwarding to MQTT |
 | `exclude_pki` | boolean | false | Disable private key infrastructure |
+| `role` | enum | CLIENT_MUTE | `CLIENT_MUTE` (no relaying), `CLIENT` (relay, cancel if another node relays first), `ROUTER` (relay with priority) |
+| `slot_time` | time | 9ms | Contention slot of the LoRa preset (SHORT_FAST: 9 ms), used for the relay delay |
 | `broadcast_interval` | time | 3h | Node info broadcast interval |
 
 ### Channel Configuration
@@ -243,7 +245,22 @@ For additional configuration examples and a complete working setup, see [`meshta
 ```yaml
 channels:
   - name: "Channel Name"
-    psk: "Base64EncodedPSK"  # Pre-shared key for encryption
+    psk: "Base64EncodedPSK"  # 16/32-byte key, or 1 byte: "AQ==" default key, "AA==" no encryption
+```
+
+### Packet Relaying
+
+With `role: CLIENT` or `ROUTER` the node rebroadcasts LoRa packets like a Meshtastic device:
+packets not from/to this node, not seen before, with `hop_limit > 0` and `next_hop` unset or
+ours. The payload is forwarded still encrypted (no channel key needed), `hop_limit` is
+decremented and `relay_node` set. The delay before rebroadcast is SNR-weighted (weaker signal
+relays first); `CLIENT` cancels a pending relay when another node relays the packet first.
+
+```yaml
+meshtastic:
+  - id: mesh_node
+    role: CLIENT
+    slot_time: 9ms   # SHORT_FAST
 ```
 
 ### Node Configuration
