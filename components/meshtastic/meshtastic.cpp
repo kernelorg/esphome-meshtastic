@@ -1000,6 +1000,7 @@ void Meshtastic::handle_received_packet(meshtastic_MeshPacket &mp) {
   }
   meshtastic_Data decodedtmp;
   memset(&decodedtmp, 0, sizeof(decodedtmp));
+  bool is_routing = false;
   if(pb_decode_from_bytes(decrypted_data, payload_len, &meshtastic_Data_msg, &decodedtmp)) {
     ESP_LOGI(TAG, "Decoded meshtastic_Data request_id=%x ch_name=%s portnum=%d payload len=%d want_response=%d", decodedtmp.request_id, channel_name.c_str(), decodedtmp.portnum, decodedtmp.payload.size, decodedtmp.want_response);
 
@@ -1010,6 +1011,7 @@ void Meshtastic::handle_received_packet(meshtastic_MeshPacket &mp) {
         !mp.via_mqtt && decodedtmp.has_bitfield && (decodedtmp.bitfield & BITFIELD_OK_TO_MQTT_MASK))
       this->mqtt_uplink_(mp, *rx_channel);
 
+    is_routing = decodedtmp.portnum == meshtastic_PortNum_ROUTING_APP;
     this->update_node_seen_(mp);
     this->client_push_packet_(mp, decodedtmp);
 
@@ -1105,7 +1107,7 @@ void Meshtastic::handle_received_packet(meshtastic_MeshPacket &mp) {
     ESP_LOGE(TAG, "Failed to decode meshtastic_Data_msg");
     rx_bad_count++;
   }
-  if(mp.want_ack && mp.to == this->node_num_) {
+  if(mp.want_ack && mp.to == this->node_num_ && !is_routing) {  // never ACK an ACK
     send_ack(mp.from, mp.id, mp.channel, meshtastic_Routing_Error_NONE);
   }
 }
