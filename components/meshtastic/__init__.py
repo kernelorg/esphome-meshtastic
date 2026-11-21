@@ -58,12 +58,37 @@ CONF_POSITION_PRECISION = "position_precision"
 CONF_UPLINK = "uplink"
 CONF_DOWNLINK = "downlink"
 CONF_MQTT_ROOT_TOPIC = "mqtt_root_topic"
+CONF_ON_TEXT_MESSAGE = "on_text_message"
+CONF_CLIENT_API = "client_api"
+CONF_PORT = "port"
+CONF_REGION = "region"
+CONF_MODEM_PRESET = "modem_preset"
+
+# Meshtastic Config.LoRaConfig enums (reported to clients only; radio settings come from sx126x/sx127x)
+REGIONS = {"UNSET": 0, "US": 1, "EU_433": 2, "EU_868": 3, "CN": 4, "JP": 5, "ANZ": 6, "KR": 7,
+           "TW": 8, "RU": 9, "IN": 10, "NZ_865": 11, "TH": 12, "LORA_24": 13, "UA_433": 14,
+           "UA_868": 15, "MY_433": 16, "MY_919": 17, "SG_923": 18}
+MODEM_PRESETS = {"LONG_FAST": 0, "LONG_SLOW": 1, "VERY_LONG_SLOW": 2, "MEDIUM_SLOW": 3,
+                 "MEDIUM_FAST": 4, "SHORT_SLOW": 5, "SHORT_FAST": 6, "LONG_MODERATE": 7,
+                 "SHORT_TURBO": 8}
 
 meshtastic_ns = cg.esphome_ns.namespace("meshtastic")
 Meshtastic = meshtastic_ns.class_("Meshtastic", cg.Component)
 
 Channel = meshtastic_ns.class_("Channel")
 Node = meshtastic_ns.class_("Node")
+TextMessageTrigger = meshtastic_ns.class_(
+    "TextMessageTrigger",
+    automation.Trigger.template(cg.uint32, cg.std_string, cg.std_string, cg.std_string),
+)
+
+CLIENT_API_SCHEMA = cv.Schema(
+    {
+        cv.Optional(CONF_PORT, default=80): cv.port,
+        cv.Optional(CONF_REGION, default="EU_868"): cv.enum(REGIONS, upper=True),
+        cv.Optional(CONF_MODEM_PRESET, default="LONG_FAST"): cv.enum(MODEM_PRESETS, upper=True),
+    }
+)
 
 SendPacketAction = meshtastic_ns.class_(
     "SendPacketAction", automation.Action, cg.Parented.template(Meshtastic)
@@ -227,6 +252,10 @@ CONFIG_SCHEMA = cv.All(
                 cv.Optional(CONF_POSITION): cv.All(cv.ensure_list(POSITION_SCHEMA)),
                 cv.Optional(CONF_EXCLUDE_PKI): cv.boolean,
                 cv.Optional(CONF_MQTT_ROOT_TOPIC, default="msh/EU_868"): cv.publish_topic,
+                cv.Optional(CONF_ON_TEXT_MESSAGE): automation.validate_automation(
+                    {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(TextMessageTrigger)}
+                ),
+                cv.Optional(CONF_CLIENT_API): CLIENT_API_SCHEMA,
             }
         )
     ),
@@ -253,6 +282,27 @@ async def to_code(configs):
         cg.add(var.set_ok_to_mqtt(config[CONF_OKTOMQTT]))
         cg.add(var.set_hw_model(config[CONF_HW_MODEL]))
         cg.add(var.set_mqtt_root_topic(config[CONF_MQTT_ROOT_TOPIC]))
+        for conf in config.get(CONF_ON_TEXT_MESSAGE, []):
+            trig = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+            await automation.build_automation(
+                trig,
+                [
+                    (cg.uint32, "from"),
+                    (cg.std_string, "sender"),
+                    (cg.std_string, "channel"),
+                    (cg.std_string, "text"),
+                ],
+                conf,
+            )
+        if api := config.get(CONF_CLIENT_API):
+            cg.add_define("MESHTASTIC_CLIENT_API")
+            try:
+                from esphome.components.esp32 import include_builtin_idf_component
+
+                include_builtin_idf_component("esp_http_server")
+            except ImportError:  # older ESPHome builds every IDF component
+                pass
+            cg.add(var.set_client_api(api[CONF_PORT], api[CONF_REGION], api[CONF_MODEM_PRESET]))
         if any(
             ch[CONF_UPLINK] or ch[CONF_DOWNLINK] for ch in config.get(CONF_CHANNELS, [])
         ):

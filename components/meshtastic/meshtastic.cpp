@@ -46,6 +46,7 @@ static const uint8_t DEFAULT_PSK[16] = {0xd4, 0xf1, 0xbb, 0x3a, 0x20, 0x29, 0x07
                                         0xf0, 0xbc, 0xff, 0xab, 0xcf, 0x4e, 0x69, 0x01};
 
 void Channel::set_psk(const psk_t &psk) {
+  this->psk_config_ = psk;
   psk_t k = psk;
   if (k.size() == 1) {
     uint8_t idx = k[0];
@@ -395,10 +396,12 @@ void Meshtastic::setup() {
   }
   this->load_learned_nodes_();
   this->mqtt_setup_();
+  this->client_api_setup_();
 }
 
 void Meshtastic::loop() {
   this->process_relays_();
+  this->client_api_loop_();
 #if defined(USE_SOCKET_IMPL_BSD_SOCKETS) || defined(USE_SOCKET_IMPL_LWIP_SOCKETS)
   if(this->use_udp_) {
     auto buf = std::vector<uint8_t>(meshtastic_MeshPacket_size);
@@ -686,8 +689,8 @@ bool Meshtastic::transmit_packet_encrypt(meshtastic_MeshPacket &mp, bool want_re
   if(mp.to && mp.to != this->node_num_ && mp.to != NODENUM_BROADCAST && mp.channel == 0) {
     Node* dest_node = get_node_by_num(mp.to);
 #if !defined(MESHTASTIC_EXCLUDE_PKI)
-    if(dest_node == nullptr) {
-      ESP_LOGW(TAG, "No node found for num 0x%08x to encrypt with Curve25519", mp.to);
+    if(dest_node == nullptr || dest_node->public_key_.size() != 32) {
+      ESP_LOGW(TAG, "No public key for 0x%08x to encrypt with Curve25519", mp.to);
       return false;
     }
     encrypt_curve25519(mp.to, mp.from, dest_node->public_key_.data(), mp.id, numbytes, bytes, mp.encrypted.bytes);
@@ -941,6 +944,7 @@ void Meshtastic::handle_received_packet(meshtastic_MeshPacket &mp) {
     hops_away = mp.hop_start - mp.hop_limit;
   ESP_LOGI(TAG, "id=%x fr=%x to=%x ch=0x%x next_hop=%x relay_node=%x hop=%d/%d away=%d rssi=%d snr=%.2f mqtt=%d", mp.id, mp.from, mp.to, mp.channel, mp.next_hop, mp.relay_node, mp.hop_start, mp.hop_limit, hops_away, mp.rx_rssi, mp.rx_snr, mp.via_mqtt);
   if(mp.from == this->node_num_) {
+    this->client_push_routing_ack_(mp.id);  // implicit ACK: a neighbour relayed it
     ESP_LOGD(TAG, "Ignoring our own packet");
     return;
   }
@@ -1006,12 +1010,15 @@ void Meshtastic::handle_received_packet(meshtastic_MeshPacket &mp) {
         !mp.via_mqtt && decodedtmp.has_bitfield && (decodedtmp.bitfield & BITFIELD_OK_TO_MQTT_MASK))
       this->mqtt_uplink_(mp, *rx_channel);
 
+    this->update_node_seen_(mp);
+    this->client_push_packet_(mp, decodedtmp);
+
     std::vector<uint8_t> decoded_packet(decodedtmp.payload.bytes, decodedtmp.payload.bytes + decodedtmp.payload.size);
     this->packet_listeners_.call(mp.from, mp.to, decodedtmp.portnum, decoded_packet);
 
     if (decodedtmp.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP) {
       std::string msg = std::string(reinterpret_cast<const char*>(decodedtmp.payload.bytes), decodedtmp.payload.size);
-      ESP_LOGI(TAG, "Received meshtastic message: %s\n", msg.c_str());
+      this->on_text_received_(mp, channel_name, msg);
     }
     else if(decodedtmp.portnum == meshtastic_PortNum_POSITION_APP) {
       ESP_LOGI(TAG, "Received meshtastic position\n");
@@ -1282,9 +1289,24 @@ void Meshtastic::load_learned_nodes_() {
 }
 
 void Meshtastic::learn_node_(NodeNum num, const meshtastic_User &user) {
-  if (num == this->node_num_ || user.public_key.size != 32)
+  if (num == this->node_num_)
     return;
   Node *node = get_node_by_num(num);
+  if (node == nullptr) {
+    auto nn = std::make_unique<Node>();
+    nn->node_num_ = num;
+    nn->learned_ = true;
+    node = nn.get();
+    this->nodes_.push_back(std::move(nn));
+  }
+  if (node->learned_) {
+    node->name_ = user.long_name;
+    node->name_short_ = user.short_name;
+  }
+  node->hw_model_ = user.hw_model;
+  node->role_ = user.role;
+  if (user.public_key.size != 32)
+    return;
   if (node != nullptr) {
     if (node->public_key_.size() == 32) {
       if (memcmp(node->public_key_.data(), user.public_key.bytes, 32) != 0)
@@ -1292,14 +1314,6 @@ void Meshtastic::learn_node_(NodeNum num, const meshtastic_User &user) {
       return;  // key pinned (trust on first use)
     }
     node->public_key_.assign(user.public_key.bytes, user.public_key.bytes + 32);
-  } else {
-    auto nn = std::make_unique<Node>();
-    nn->node_num_ = num;
-    nn->name_ = user.long_name;
-    nn->name_short_ = user.short_name;
-    nn->public_key_.assign(user.public_key.bytes, user.public_key.bytes + 32);
-    nn->learned_ = true;
-    this->nodes_.push_back(std::move(nn));
   }
   ESP_LOGI(TAG, "Learned public key of 0x%08" PRIx32 " (%s)", num, user.short_name);
 

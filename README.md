@@ -244,6 +244,8 @@ For additional configuration examples and a complete working setup, see [`meshta
 | `role` | enum | CLIENT_MUTE | `CLIENT_MUTE` (no relaying), `CLIENT` (relay, cancel if another node relays first), `ROUTER` (relay with priority) |
 | `slot_time` | time | 9ms | Contention slot of the LoRa preset (SHORT_FAST: 9 ms), used for the relay delay |
 | `mqtt_root_topic` | string | msh/EU_868 | MQTT gateway root; topics are `<root>/2/e/<channel>/<gateway id>` |
+| `client_api` | map | — | Meshtastic client HTTP API, see below |
+| `on_text_message` | automation | — | Text received; variables `from` (uint32), `sender`, `channel` (`""` = direct), `text` |
 | `broadcast_interval` | time | 3h | Node info broadcast interval |
 
 ### Channel Configuration
@@ -301,6 +303,61 @@ meshtastic:
         uplink: true
         downlink: true
 ```
+
+### Meshtastic Client API
+
+Implements the HTTP transport of the Meshtastic clients (`PUT /api/v1/toradio`,
+`GET /api/v1/fromradio`), so the Meshtastic web client can connect to the node, show nodes and
+channels, and send/receive messages. It runs its own HTTP server (the ESPHome `web_server` has
+no `PUT`); choose another port if `web_server` uses 80.
+
+```yaml
+meshtastic:
+  - id: mesh_node
+    client_api:
+      port: 80
+      region: EU_868          # reported to the client only
+      modem_preset: SHORT_FAST
+```
+
+Supported: config download (`want_config`, including nonces 69420/69421), node list, channels,
+text and other packets in both directions, PKI direct messages, ACK when a neighbour relays our
+broadcast. Not supported: changing settings from the client (admin messages are ignored, the
+YAML is the configuration). There is no authentication, as on Meshtastic devices.
+
+The hosted client at `https://client.meshtastic.org` cannot reach a plain `http://` device
+(mixed content). Run the web client locally (`docker run -p 8080:8080 ghcr.io/meshtastic/web`)
+or allow insecure content for that site in the browser.
+
+### Home Assistant Entities
+
+```yaml
+meshtastic:
+  - id: mesh_node
+    on_text_message:
+      - homeassistant.event:
+          event: esphome.mesh_text
+          data:
+            sender: !lambda return sender;
+            channel: !lambda return channel;
+            text: !lambda return text;
+
+text_sensor:
+  - platform: meshtastic
+    type: last_message   # last_message | last_sender | last_channel ("direct" for DMs)
+    name: "Mesh last message"
+
+select:
+  - platform: meshtastic   # destination: channels, then nodes from `nodes:`
+    name: "Mesh destination"
+
+text:
+  - platform: meshtastic   # setting the value sends it to the selected destination
+    name: "Mesh send"
+```
+
+`on_text_message` fires for every message, also when the same text repeats; the text sensors
+only change state when the value changes.
 
 ### Learned Node Keys
 

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Meshtastic client API: `client_api` (port, region, modem_preset) serves
+  `PUT /api/v1/toradio` / `GET /api/v1/fromradio` on its own HTTP server; config download,
+  node list, channels, packets both ways, PKI direct messages, implicit ACK. Admin messages
+  are ignored.
+- Home Assistant: `text_sensor` (`last_message`, `last_sender`, `last_channel`), `select`
+  (destination) and `text` (send) platforms; `on_text_message` trigger with `from`, `sender`,
+  `channel`, `text`.
+- Received text is logged with sender and channel or "direct".
+- Node list keeps names, hardware model, role, SNR, hops and last heard of nodes (64 in RAM);
+  names are learned also from NodeInfo without a public key.
+- PKI send checks that the destination key is known.
 - README points to this fork (install source, clone URL, issues, maintainer).
 
 ## v2

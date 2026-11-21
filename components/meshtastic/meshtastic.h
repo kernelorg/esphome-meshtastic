@@ -23,6 +23,12 @@
 #include "mesh.pb.h"
 #include "mqtt.pb.h"
 #include "esphome/core/preferences.h"
+#include "esphome/core/helpers.h"
+#include <deque>
+#include <set>
+#ifdef USE_TEXT_SENSOR
+#include "esphome/components/text_sensor/text_sensor.h"
+#endif
 
 #include <unordered_set>
 #include <unordered_map>
@@ -80,6 +86,12 @@ struct Node {
     std::vector<uint8_t> private_key_;
     std::vector<uint8_t> public_key_;
     bool learned_ = false;  // public key learned from NodeInfo (not from YAML)
+    // NodeDB data for the client API
+    uint32_t last_heard_ = 0;
+    float snr_ = 0;
+    uint8_t hops_away_ = 0;
+    meshtastic_HardwareModel hw_model_ = meshtastic_HardwareModel_UNSET;
+    meshtastic_Config_DeviceConfig_Role role_ = meshtastic_Config_DeviceConfig_Role_CLIENT;
 };
 
 // Learned public keys, persisted in flash
@@ -97,6 +109,7 @@ class Channel {
  private:
   std::string name_;
   psk_t psk_;
+  psk_t psk_config_;  // as configured (1-byte shorthand kept), reported to clients
   uint8_t hash_;
   uint8_t position_precision_ = 32;  // bits kept in lat/lon; 0 = never send position on this channel
   bool uplink_ = false;              // MQTT gateway: publish packets of this channel
@@ -112,6 +125,7 @@ class Channel {
   std::string get_name() const { return this->name_; };
   void set_psk(const psk_t &psk);
   psk_t get_psk() const { return this->psk_; };
+  const psk_t &get_psk_config() const { return this->psk_config_; };
   void generate_hash();
   void set_hash(uint8_t hash) { this->hash_ = hash; };
   uint8_t get_hash() const { return this->hash_; };
@@ -211,6 +225,42 @@ class Meshtastic : public Component
   void mqtt_setup_();
   void mqtt_uplink_(meshtastic_MeshPacket &mp, const Channel &ch);
   void on_mqtt_message_(const std::string &topic, const std::string &payload);
+  // Received text messages: log, HA entities, on_text_message
+  CallbackManager<void(uint32_t, std::string, std::string, std::string)> text_listeners_{};
+  void on_text_received_(const meshtastic_MeshPacket &mp, const std::string &channel_name, const std::string &text);
+  std::string node_label_(NodeNum num);
+  void update_node_seen_(const meshtastic_MeshPacket &mp);
+#ifdef USE_TEXT_SENSOR
+  text_sensor::TextSensor *last_message_sensor_{nullptr};
+  text_sensor::TextSensor *last_sender_sensor_{nullptr};
+  text_sensor::TextSensor *last_channel_sensor_{nullptr};
+#endif
+  std::string ha_destination_;
+  // Meshtastic client API over HTTP (/api/v1/toradio, /api/v1/fromradio)
+  uint16_t client_api_port_ = 0;
+  uint8_t client_region_ = 3;   // EU_868
+  uint8_t client_preset_ = 0;   // LONG_FAST
+  void *client_httpd_ = nullptr;
+  Mutex client_mutex_;
+  std::deque<std::vector<uint8_t>> client_config_q_;  // FromRadio, answer to want_config
+  std::deque<std::vector<uint8_t>> client_packet_q_;  // FromRadio packets
+  std::deque<std::vector<uint8_t>> client_toradio_q_; // ToRadio from HTTP, handled in loop()
+  std::set<PacketId> client_pending_acks_;
+  uint32_t client_fromradio_id_ = 0;
+  uint32_t client_last_seen_ = 0;
+  void client_api_setup_();
+  void client_api_loop_();
+  void client_handle_toradio_(const std::vector<uint8_t> &buf);
+  void client_send_config_(uint32_t nonce);
+  void client_push_(std::deque<std::vector<uint8_t>> &q, meshtastic_FromRadio &fr, size_t max);
+  void client_push_packet_(const meshtastic_MeshPacket &mp, const meshtastic_Data &decoded);
+  void client_push_routing_ack_(PacketId id);
+  int channel_index_by_hash_(uint8_t hash);
+ public:
+  // called from the HTTP server task
+  void client_api_put_(const uint8_t *data, size_t len);
+  bool client_api_get_(std::vector<uint8_t> &out);
+ private:
   void schedule_relay_(const std::vector<uint8_t> &packet, const meshtastic_MeshPacket &mp, float snr);
   void cancel_relay_(NodeNum from, PacketId id);
   void process_relays_();
@@ -259,6 +309,23 @@ class Meshtastic : public Component
     c.set_downlink(downlink);
   };
   void set_mqtt_root_topic(const std::string &t) { this->mqtt_root_topic_ = t; };
+  void set_client_api(uint16_t port, uint8_t region, uint8_t preset) {
+    this->client_api_port_ = port;
+    this->client_region_ = region;
+    this->client_preset_ = preset;
+  };
+  void add_text_listener(std::function<void(uint32_t, std::string, std::string, std::string)> &&f) {
+    this->text_listeners_.add(std::move(f));
+  };
+#ifdef USE_TEXT_SENSOR
+  void set_last_message_sensor(text_sensor::TextSensor *s) { this->last_message_sensor_ = s; };
+  void set_last_sender_sensor(text_sensor::TextSensor *s) { this->last_sender_sensor_ = s; };
+  void set_last_channel_sensor(text_sensor::TextSensor *s) { this->last_channel_sensor_ = s; };
+#endif
+  // HA send entities: destination is a channel name or "!xxxxxxxx" (direct message)
+  void set_ha_destination(const std::string &d) { this->ha_destination_ = d; };
+  bool send_text_to_destination(const std::string &destination, const std::string &text);
+  bool send_text_from_ha(const std::string &text) { return this->send_text_to_destination(this->ha_destination_, text); };
   void set_mqtt_gateway(bool v) { this->mqtt_gateway_ = v; };
   void add_node(NodeNum node_num, const std::string &name, const std::string &short_name, const std::vector<uint8_t> &public_key, const std::vector<uint8_t> &private_key) {
       auto node = std::make_unique<Node>();
