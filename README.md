@@ -70,7 +70,7 @@ Add to your ESPHome configuration:
 
 ```yaml
 external_components:
-  - source: github://kernelorg/esphome-meshtastic@v2   # pin a release tag
+  - source: github://kernelorg/esphome-meshtastic@v3   # pin a release tag
     components: [meshtastic]
     refresh: 24h
 ```

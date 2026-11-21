@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v3
 
 - Meshtastic client API: `client_api` (port, region, modem_preset) serves
   `PUT /api/v1/toradio` / `GET /api/v1/fromradio` on its own HTTP server; config download,
@@ -13,6 +13,10 @@
 - Node list keeps names, hardware model, role, SNR, hops and last heard of nodes (64 in RAM);
   names are learned also from NodeInfo without a public key.
 - PKI send checks that the destination key is known.
+- Routing (ACK) packets are no longer acknowledged.
+- Client API compatibility with the Meshtastic web client 2.7.x: channel settings are sent for
+  empty slots too, ACKs carry the id of the acknowledged message (the client matches by packet
+  id), and the `statusmessage`, `traffic_management` and `tak` module configs are sent (defaults).
 - README points to this fork (install source, clone URL, issues, maintainer).
 
 ## v2
