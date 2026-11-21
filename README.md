@@ -317,10 +317,16 @@ no `PUT`); choose another port if `web_server` uses 80.
 meshtastic:
   - id: mesh_node
     client_api:
-      port: 80
+      port: 80                # HTTP API (web client), 0 = off
+      tcp_port: 4403          # TCP API, 0 = off
       region: EU_868          # reported to the client only
       modem_preset: SHORT_FAST
 ```
+
+`tcp_port` serves the Meshtastic stream protocol (frames `0x94 0xC3 <length, 2 bytes big-endian>
+<protobuf>`) used by the Home Assistant Meshtastic integration, `meshtastic --host <ip>` and the
+apps' network connection. Up to 3 TCP clients; each client (and the HTTP client) has its own
+queue, so they do not take packets from each other.
 
 Supported: config download (`want_config`, including nonces 69420/69421), node list, channels,
 text and other packets in both directions, PKI direct messages, ACK when a neighbour relays our

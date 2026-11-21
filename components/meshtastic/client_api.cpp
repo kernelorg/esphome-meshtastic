@@ -12,6 +12,11 @@
 #ifdef MESHTASTIC_CLIENT_API
 #include <esp_http_server.h>
 #endif
+#ifdef MESHTASTIC_TCP_API
+#include <lwip/sockets.h>
+#include <lwip/inet.h>
+#include <fcntl.h>
+#endif
 
 namespace esphome {
 namespace meshtastic {
@@ -115,23 +120,52 @@ int Meshtastic::channel_index_by_hash_(uint8_t hash) {
 // ---------------------------------------------------------------------------
 // Client API queues (shared with the HTTP task, guarded by client_mutex_)
 // ---------------------------------------------------------------------------
-void Meshtastic::client_push_(std::deque<std::vector<uint8_t>> &q, meshtastic_FromRadio &fr, size_t max) {
+bool Meshtastic::client_encode_(meshtastic_FromRadio &fr, std::vector<uint8_t> &out) {
   fr.id = ++this->client_fromradio_id_;
-  std::vector<uint8_t> buf(meshtastic_FromRadio_size);
-  size_t len = pb_encode_to_bytes(buf.data(), buf.size(), &meshtastic_FromRadio_msg, &fr);
+  out.resize(meshtastic_FromRadio_size);
+  size_t len = pb_encode_to_bytes(out.data(), out.size(), &meshtastic_FromRadio_msg, &fr);
   if (len == 0) {
     ESP_LOGW(TAG, "FromRadio encode failed (variant %u)", (unsigned) fr.which_payload_variant);
-    return;
+    return false;
   }
-  buf.resize(len);
-  LockGuard lock(this->client_mutex_);
+  out.resize(len);
+  return true;
+}
+
+void Meshtastic::client_queue_(std::deque<std::vector<uint8_t>> &q, std::vector<uint8_t> &&buf, size_t max) {
+  LockGuard lock(this->client_mutex_);  // the HTTP session is read from the HTTP task
   if (max && q.size() >= max)
     q.pop_front();
   q.push_back(std::move(buf));
 }
 
+void Meshtastic::client_push_(std::deque<std::vector<uint8_t>> &q, meshtastic_FromRadio &fr, size_t max) {
+  std::vector<uint8_t> buf;
+  if (this->client_encode_(fr, buf))
+    this->client_queue_(q, std::move(buf), max);
+}
+
+bool Meshtastic::client_any_active_() {
+  if (!this->tcp_clients_.empty())
+    return true;
+  return this->client_api_port_ != 0 && this->http_session_.last_seen != 0 &&
+         millis() - this->http_session_.last_seen < CLIENT_IDLE_MS;
+}
+
+// Live packets go to every connected client
+void Meshtastic::client_broadcast_(meshtastic_FromRadio &fr) {
+  std::vector<uint8_t> buf;
+  if (!this->client_encode_(fr, buf))
+    return;
+  for (auto &c : this->tcp_clients_)
+    this->client_queue_(c->session.packet_q, std::vector<uint8_t>(buf), CLIENT_PACKET_QUEUE_MAX);
+  if (this->client_api_port_ != 0 && this->http_session_.last_seen != 0 &&
+      millis() - this->http_session_.last_seen < CLIENT_IDLE_MS)
+    this->client_queue_(this->http_session_.packet_q, std::move(buf), CLIENT_PACKET_QUEUE_MAX);
+}
+
 void Meshtastic::client_push_packet_(const meshtastic_MeshPacket &mp, const meshtastic_Data &decoded) {
-  if (this->client_api_port_ == 0 || millis() - this->client_last_seen_ > CLIENT_IDLE_MS)
+  if (!this->client_any_active_())
     return;
   auto fr = std::make_unique<meshtastic_FromRadio>();
   memset(fr.get(), 0, sizeof(meshtastic_FromRadio));
@@ -155,7 +189,7 @@ void Meshtastic::client_push_packet_(const meshtastic_MeshPacket &mp, const mesh
       p.public_key.size = 32;
     }
   }
-  this->client_push_(this->client_packet_q_, *fr, CLIENT_PACKET_QUEUE_MAX);
+  this->client_broadcast_(*fr);
 }
 
 void Meshtastic::client_push_routing_ack_(PacketId id) {
@@ -175,7 +209,7 @@ void Meshtastic::client_push_routing_ack_(PacketId id) {
   r.which_variant = meshtastic_Routing_error_reason_tag;
   r.error_reason = meshtastic_Routing_Error_NONE;
   p.decoded.payload.size = pb_encode_to_bytes(p.decoded.payload.bytes, sizeof(p.decoded.payload.bytes), &meshtastic_Routing_msg, &r);
-  this->client_push_(this->client_packet_q_, *fr, CLIENT_PACKET_QUEUE_MAX);
+  this->client_broadcast_(*fr);
 }
 
 void Meshtastic::client_api_put_(const uint8_t *data, size_t len) {
@@ -187,8 +221,8 @@ void Meshtastic::client_api_put_(const uint8_t *data, size_t len) {
 
 bool Meshtastic::client_api_get_(std::vector<uint8_t> &out) {
   LockGuard lock(this->client_mutex_);
-  this->client_last_seen_ = millis();
-  auto &q = !this->client_config_q_.empty() ? this->client_config_q_ : this->client_packet_q_;
+  this->http_session_.last_seen = millis();
+  auto &q = !this->http_session_.config_q.empty() ? this->http_session_.config_q : this->http_session_.packet_q;
   if (q.empty())
     return false;
   out = std::move(q.front());
@@ -200,6 +234,7 @@ bool Meshtastic::client_api_get_(std::vector<uint8_t> &out) {
 // ToRadio handling (main loop)
 // ---------------------------------------------------------------------------
 void Meshtastic::client_api_loop_() {
+  this->tcp_api_loop_();
   if (this->client_api_port_ == 0)
     return;
   for (;;) {
@@ -211,11 +246,11 @@ void Meshtastic::client_api_loop_() {
       buf = std::move(this->client_toradio_q_.front());
       this->client_toradio_q_.pop_front();
     }
-    this->client_handle_toradio_(buf);
+    this->client_handle_toradio_(buf, this->http_session_);
   }
 }
 
-void Meshtastic::client_handle_toradio_(const std::vector<uint8_t> &buf) {
+void Meshtastic::client_handle_toradio_(const std::vector<uint8_t> &buf, ClientSession &session) {
   auto tr = std::make_unique<meshtastic_ToRadio>();
   memset(tr.get(), 0, sizeof(meshtastic_ToRadio));
   if (!pb_decode_from_bytes(buf.data(), buf.size(), &meshtastic_ToRadio_msg, tr.get())) {
@@ -225,12 +260,12 @@ void Meshtastic::client_handle_toradio_(const std::vector<uint8_t> &buf) {
   switch (tr->which_payload_variant) {
     case meshtastic_ToRadio_want_config_id_tag:
       ESP_LOGI(TAG, "Client wants config, nonce=%" PRIu32, tr->want_config_id);
-      this->client_send_config_(tr->want_config_id);
+      this->client_send_config_(tr->want_config_id, session);
       break;
     case meshtastic_ToRadio_disconnect_tag: {
       LockGuard lock(this->client_mutex_);
-      this->client_config_q_.clear();
-      this->client_packet_q_.clear();
+      session.config_q.clear();
+      session.packet_q.clear();
       break;
     }
     case meshtastic_ToRadio_heartbeat_tag:
@@ -276,18 +311,18 @@ void Meshtastic::client_handle_toradio_(const std::vector<uint8_t> &buf) {
   }
 }
 
-void Meshtastic::client_send_config_(uint32_t nonce) {
+void Meshtastic::client_send_config_(uint32_t nonce, ClientSession &session) {
   {
     LockGuard lock(this->client_mutex_);
-    this->client_config_q_.clear();
-    this->client_last_seen_ = millis();
+    session.config_q.clear();
+    session.last_seen = millis();
   }
   auto fr = std::make_unique<meshtastic_FromRadio>();
   auto reset = [&fr](pb_size_t tag) {
     memset(fr.get(), 0, sizeof(meshtastic_FromRadio));
     fr->which_payload_variant = tag;
   };
-  auto &q = this->client_config_q_;
+  auto &q = session.config_q;
 
   // MyNodeInfo
   reset(meshtastic_FromRadio_my_info_tag);
@@ -524,7 +559,154 @@ static esp_err_t handle_fromradio(httpd_req_t *req) {
 }
 #endif
 
+// ---------------------------------------------------------------------------
+// TCP API: Meshtastic stream protocol (0x94 0xC3 <len hi> <len lo> <protobuf>), like port 4403
+// on Meshtastic devices. Non-blocking lwIP sockets served from loop().
+// ---------------------------------------------------------------------------
+#ifdef MESHTASTIC_TCP_API
+static constexpr uint8_t STREAM_START1 = 0x94;
+static constexpr uint8_t STREAM_START2 = 0xC3;
+static constexpr size_t STREAM_MAX_PAYLOAD = 512;
+static constexpr size_t TCP_MAX_CLIENTS = 3;
+static constexpr size_t TCP_TX_MAX = 8192;  // drop the client if it does not read
+#endif
+
+void Meshtastic::tcp_api_setup_() {
+#ifdef MESHTASTIC_TCP_API
+  if (this->tcp_api_port_ == 0)
+    return;
+  int fd = lwip_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (fd < 0) {
+    ESP_LOGE(TAG, "TCP API: socket() failed: %d", errno);
+    return;
+  }
+  int one = 1;
+  lwip_setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+  struct sockaddr_in addr {};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(this->tcp_api_port_);
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  if (lwip_bind(fd, (struct sockaddr *) &addr, sizeof(addr)) != 0 || lwip_listen(fd, 2) != 0) {
+    ESP_LOGE(TAG, "TCP API: cannot listen on port %u: %d", this->tcp_api_port_, errno);
+    lwip_close(fd);
+    return;
+  }
+  lwip_fcntl(fd, F_SETFL, lwip_fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+  this->tcp_listen_fd_ = fd;
+  ESP_LOGI(TAG, "Meshtastic TCP API on port %u", this->tcp_api_port_);
+#endif
+}
+
+void Meshtastic::tcp_api_loop_() {
+#ifdef MESHTASTIC_TCP_API
+  if (this->tcp_listen_fd_ < 0)
+    return;
+  // accept
+  for (;;) {
+    struct sockaddr_in peer {};
+    socklen_t plen = sizeof(peer);
+    int fd = lwip_accept(this->tcp_listen_fd_, (struct sockaddr *) &peer, &plen);
+    if (fd < 0)
+      break;
+    if (this->tcp_clients_.size() >= TCP_MAX_CLIENTS) {
+      ESP_LOGW(TAG, "TCP API: too many clients, refusing %s", inet_ntoa(peer.sin_addr));
+      lwip_close(fd);
+      continue;
+    }
+    lwip_fcntl(fd, F_SETFL, lwip_fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    int one = 1;
+    lwip_setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    auto c = std::make_unique<TcpClient>();
+    c->fd = fd;
+    c->session.last_seen = millis();
+    ESP_LOGI(TAG, "TCP API: client %s connected", inet_ntoa(peer.sin_addr));
+    this->tcp_clients_.push_back(std::move(c));
+  }
+  for (auto it = this->tcp_clients_.begin(); it != this->tcp_clients_.end();) {
+    TcpClient &c = **it;
+    this->tcp_client_service_(c);
+    if (c.fd < 0) {
+      it = this->tcp_clients_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+#endif
+}
+
+void Meshtastic::tcp_client_service_(TcpClient &c) {
+#ifdef MESHTASTIC_TCP_API
+  // read
+  uint8_t buf[256];
+  for (;;) {
+    ssize_t n = lwip_read(c.fd, buf, sizeof(buf));
+    if (n > 0) {
+      c.rx.insert(c.rx.end(), buf, buf + n);
+      c.session.last_seen = millis();
+      continue;
+    }
+    if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+      ESP_LOGI(TAG, "TCP API: client disconnected");
+      lwip_close(c.fd);
+      c.fd = -1;
+      return;
+    }
+    break;
+  }
+  // parse frames; resynchronise on garbage (clients send 0xC3 wake-up bytes first)
+  size_t pos = 0;
+  while (c.rx.size() - pos >= 4) {
+    if (c.rx[pos] != STREAM_START1 || c.rx[pos + 1] != STREAM_START2) {
+      pos++;
+      continue;
+    }
+    size_t len = (c.rx[pos + 2] << 8) | c.rx[pos + 3];
+    if (len > STREAM_MAX_PAYLOAD) {
+      pos++;
+      continue;
+    }
+    if (c.rx.size() - pos - 4 < len)
+      break;
+    std::vector<uint8_t> payload(c.rx.begin() + pos + 4, c.rx.begin() + pos + 4 + len);
+    pos += 4 + len;
+    this->client_handle_toradio_(payload, c.session);
+  }
+  c.rx.erase(c.rx.begin(), c.rx.begin() + pos);
+  if (c.rx.size() > 2 * STREAM_MAX_PAYLOAD)
+    c.rx.clear();
+  // frame queued FromRadio messages
+  {
+    LockGuard lock(this->client_mutex_);
+    while (c.tx.size() < TCP_TX_MAX && (!c.session.config_q.empty() || !c.session.packet_q.empty())) {
+      auto &q = !c.session.config_q.empty() ? c.session.config_q : c.session.packet_q;
+      const auto &m = q.front();
+      c.tx.push_back(STREAM_START1);
+      c.tx.push_back(STREAM_START2);
+      c.tx.push_back(m.size() >> 8);
+      c.tx.push_back(m.size() & 0xFF);
+      c.tx.insert(c.tx.end(), m.begin(), m.end());
+      q.pop_front();
+    }
+  }
+  // write
+  while (!c.tx.empty()) {
+    ssize_t n = lwip_write(c.fd, c.tx.data(), c.tx.size());
+    if (n > 0) {
+      c.tx.erase(c.tx.begin(), c.tx.begin() + n);
+      continue;
+    }
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+      break;
+    ESP_LOGI(TAG, "TCP API: write failed, closing");
+    lwip_close(c.fd);
+    c.fd = -1;
+    return;
+  }
+#endif
+}
+
 void Meshtastic::client_api_setup_() {
+  this->tcp_api_setup_();
   if (this->client_api_port_ == 0)
     return;
 #ifdef MESHTASTIC_CLIENT_API

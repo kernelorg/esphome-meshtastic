@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Meshtastic TCP API: `client_api.tcp_port` (default 4403, 0 = off) serves the stream protocol
+  for the Home Assistant Meshtastic integration, `meshtastic --host` and apps; up to 3 clients.
+- Every client (each TCP connection, the HTTP client) has its own FromRadio queue; `client_api.port`
+  0 disables the HTTP API.
 - Example `meshtastic-api.yaml`: Ethernet-only node with the client API and Home Assistant entities.
 
 ## v3

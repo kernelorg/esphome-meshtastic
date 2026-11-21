@@ -61,6 +61,7 @@ CONF_MQTT_ROOT_TOPIC = "mqtt_root_topic"
 CONF_ON_TEXT_MESSAGE = "on_text_message"
 CONF_CLIENT_API = "client_api"
 CONF_PORT = "port"
+CONF_TCP_PORT = "tcp_port"
 CONF_REGION = "region"
 CONF_MODEM_PRESET = "modem_preset"
 
@@ -84,7 +85,10 @@ TextMessageTrigger = meshtastic_ns.class_(
 
 CLIENT_API_SCHEMA = cv.Schema(
     {
-        cv.Optional(CONF_PORT, default=80): cv.port,
+        # HTTP API (web client); 0 disables
+        cv.Optional(CONF_PORT, default=80): cv.int_range(0, 65535),
+        # TCP stream API (HA Meshtastic integration, python CLI --host, apps); 0 disables
+        cv.Optional(CONF_TCP_PORT, default=4403): cv.int_range(0, 65535),
         cv.Optional(CONF_REGION, default="EU_868"): cv.enum(REGIONS, upper=True),
         cv.Optional(CONF_MODEM_PRESET, default="LONG_FAST"): cv.enum(MODEM_PRESETS, upper=True),
     }
@@ -295,14 +299,24 @@ async def to_code(configs):
                 conf,
             )
         if api := config.get(CONF_CLIENT_API):
-            cg.add_define("MESHTASTIC_CLIENT_API")
-            try:
-                from esphome.components.esp32 import include_builtin_idf_component
+            if api[CONF_PORT]:
+                cg.add_define("MESHTASTIC_CLIENT_API")
+                try:
+                    from esphome.components.esp32 import include_builtin_idf_component
 
-                include_builtin_idf_component("esp_http_server")
-            except ImportError:  # older ESPHome builds every IDF component
-                pass
-            cg.add(var.set_client_api(api[CONF_PORT], api[CONF_REGION], api[CONF_MODEM_PRESET]))
+                    include_builtin_idf_component("esp_http_server")
+                except ImportError:  # older ESPHome builds every IDF component
+                    pass
+            if api[CONF_TCP_PORT]:
+                cg.add_define("MESHTASTIC_TCP_API")
+            cg.add(
+                var.set_client_api(
+                    api[CONF_PORT],
+                    api[CONF_TCP_PORT],
+                    api[CONF_REGION],
+                    api[CONF_MODEM_PRESET],
+                )
+            )
         if any(
             ch[CONF_UPLINK] or ch[CONF_DOWNLINK] for ch in config.get(CONF_CHANNELS, [])
         ):

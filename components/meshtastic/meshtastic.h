@@ -242,17 +242,38 @@ class Meshtastic : public Component
   uint8_t client_preset_ = 0;   // LONG_FAST
   void *client_httpd_ = nullptr;
   Mutex client_mutex_;
-  std::deque<std::vector<uint8_t>> client_config_q_;  // FromRadio, answer to want_config
-  std::deque<std::vector<uint8_t>> client_packet_q_;  // FromRadio packets
-  std::deque<std::vector<uint8_t>> client_toradio_q_; // ToRadio from HTTP, handled in loop()
+  // One session per connected client: its own config answer and packet queue
+  struct ClientSession {
+    std::deque<std::vector<uint8_t>> config_q;  // FromRadio, answer to want_config
+    std::deque<std::vector<uint8_t>> packet_q;  // FromRadio packets
+    uint32_t last_seen = 0;
+  };
+  ClientSession http_session_;                         // HTTP API (guarded by client_mutex_)
+  std::deque<std::vector<uint8_t>> client_toradio_q_;  // ToRadio from HTTP, handled in loop()
+  // TCP API (Meshtastic stream protocol, port 4403), served from loop()
+  struct TcpClient {
+    int fd = -1;
+    ClientSession session;
+    std::vector<uint8_t> rx;
+    std::vector<uint8_t> tx;
+  };
+  uint16_t tcp_api_port_ = 0;
+  int tcp_listen_fd_ = -1;
+  std::vector<std::unique_ptr<TcpClient>> tcp_clients_;
+  void tcp_api_setup_();
+  void tcp_api_loop_();
+  void tcp_client_service_(TcpClient &c);
   std::set<PacketId> client_pending_acks_;
   uint32_t client_fromradio_id_ = 0;
-  uint32_t client_last_seen_ = 0;
   void client_api_setup_();
   void client_api_loop_();
-  void client_handle_toradio_(const std::vector<uint8_t> &buf);
-  void client_send_config_(uint32_t nonce);
+  void client_handle_toradio_(const std::vector<uint8_t> &buf, ClientSession &session);
+  void client_send_config_(uint32_t nonce, ClientSession &session);
+  bool client_encode_(meshtastic_FromRadio &fr, std::vector<uint8_t> &out);
+  void client_queue_(std::deque<std::vector<uint8_t>> &q, std::vector<uint8_t> &&buf, size_t max);
   void client_push_(std::deque<std::vector<uint8_t>> &q, meshtastic_FromRadio &fr, size_t max);
+  void client_broadcast_(meshtastic_FromRadio &fr);
+  bool client_any_active_();
   void client_push_packet_(const meshtastic_MeshPacket &mp, const meshtastic_Data &decoded);
   void client_push_routing_ack_(PacketId id);
   int channel_index_by_hash_(uint8_t hash);
@@ -309,8 +330,9 @@ class Meshtastic : public Component
     c.set_downlink(downlink);
   };
   void set_mqtt_root_topic(const std::string &t) { this->mqtt_root_topic_ = t; };
-  void set_client_api(uint16_t port, uint8_t region, uint8_t preset) {
+  void set_client_api(uint16_t port, uint16_t tcp_port, uint8_t region, uint8_t preset) {
     this->client_api_port_ = port;
+    this->tcp_api_port_ = tcp_port;
     this->client_region_ = region;
     this->client_preset_ = preset;
   };
