@@ -5,6 +5,11 @@
 A powerful ESPHome component that enables integration of [Meshtastic](https://meshtastic.org/)-compatible LoRa devices with ESPHome, allowing you to create mesh networking IoT devices with text messaging, packet routing, and mesh coordination capabilities.
 
 
+> Fork of [Andrik45719/esphome-meshtastic](https://github.com/Andrik45719/esphome-meshtastic)
+> with Ethernet-only builds, packet relaying, per-channel position precision, learned node keys
+> and an MQTT gateway. Changes per release: [CHANGELOG.md](CHANGELOG.md),
+> [Releases](https://github.com/kernelorg/esphome-meshtastic/releases).
+
 [![asciicast](https://asciinema.org/a/1041922.svg)](https://asciinema.org/a/1041922)
 
 ## What It Does
@@ -65,7 +70,7 @@ Add to your ESPHome configuration:
 
 ```yaml
 external_components:
-  - source: github://Andrik45719/esphome-meshtastic@main
+  - source: github://kernelorg/esphome-meshtastic@v2   # pin a release tag
     components: [meshtastic]
     refresh: 24h
 ```
@@ -75,7 +80,7 @@ external_components:
 Clone this repository into your ESPHome `components` directory:
 
 ```bash
-git clone https://github.com/Andrik45719/esphome-meshtastic.git \
+git clone https://github.com/kernelorg/esphome-meshtastic.git \
   ~/.esphome/components/esphome-meshtastic
 ```
 
@@ -435,12 +440,14 @@ Contributions are welcome! To contribute:
 
 - **Meshtastic Official Site**: https://meshtastic.org/
 - **ESPHome Documentation**: https://esphome.io/
-- **GitHub Issues**: Report bugs or request features on [GitHub](https://github.com/Andrik45719/esphome-meshtastic/issues)
+- **GitHub Issues**: Report bugs or request features on [GitHub](https://github.com/kernelorg/esphome-meshtastic/issues)
 - **Meshtastic Discord**: Join the community at https://discord.gg/g9Hgv9KX (Meshtastic community)
 
 ## Maintainer
 
-**Andrik45719** - [@Andrik45719](https://github.com/Andrik45719)
+**kernelorg** - [@kernelorg](https://github.com/kernelorg) (this fork)
+
+Original component by **Andrik45719** - [@Andrik45719](https://github.com/Andrik45719)
 
 ## Acknowledgments
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- README points to this fork (install source, clone URL, issues, maintainer).
+
 ## v2
 
 - Channel option `position_precision` (0..32, default 32): position is rounded like Meshtastic
