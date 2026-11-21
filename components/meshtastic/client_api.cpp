@@ -140,6 +140,10 @@ void Meshtastic::client_push_packet_(const meshtastic_MeshPacket &mp, const mesh
   p = mp;
   p.which_payload_variant = meshtastic_MeshPacket_decoded_tag;
   p.decoded = decoded;
+  // Web client 2.7.x updates the message state by the routing packet's own id instead of
+  // request_id; give ACK/NAK packets the id of the message they answer so it matches.
+  if (decoded.portnum == meshtastic_PortNum_ROUTING_APP && decoded.request_id != 0)
+    p.id = decoded.request_id;
   bool pki = (mp.channel == 0 && mp.to == this->node_num_ && channel_index_by_hash_(0) < 0);
   int idx = pki ? 0 : channel_index_by_hash_(mp.channel);
   p.channel = idx < 0 ? 0 : idx;  // clients expect the channel index, not the hash
@@ -163,7 +167,7 @@ void Meshtastic::client_push_routing_ack_(PacketId id) {
   meshtastic_MeshPacket &p = fr->packet;
   p.from = this->node_num_;
   p.to = this->node_num_;
-  p.id = generatePacketId();
+  p.id = id;  // see client_push_packet_(): the web client matches the ACK by packet id
   p.which_payload_variant = meshtastic_MeshPacket_decoded_tag;
   p.decoded.portnum = meshtastic_PortNum_ROUTING_APP;
   p.decoded.request_id = id;
