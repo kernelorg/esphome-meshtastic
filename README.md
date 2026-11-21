@@ -238,6 +238,7 @@ For additional configuration examples and a complete working setup, see [`meshta
 | `exclude_pki` | boolean | false | Disable private key infrastructure |
 | `role` | enum | CLIENT_MUTE | `CLIENT_MUTE` (no relaying), `CLIENT` (relay, cancel if another node relays first), `ROUTER` (relay with priority) |
 | `slot_time` | time | 9ms | Contention slot of the LoRa preset (SHORT_FAST: 9 ms), used for the relay delay |
+| `mqtt_root_topic` | string | msh/EU_868 | MQTT gateway root; topics are `<root>/2/e/<channel>/<gateway id>` |
 | `broadcast_interval` | time | 3h | Node info broadcast interval |
 
 ### Channel Configuration
@@ -246,7 +247,12 @@ For additional configuration examples and a complete working setup, see [`meshta
 channels:
   - name: "Channel Name"
     psk: "Base64EncodedPSK"  # 16/32-byte key, or 1 byte: "AQ==" default key, "AA==" no encryption
+    position_precision: 13   # bits of lat/lon sent on this channel: 32 exact, 13 ≈ 3 km, 0 = no position
+    uplink: false            # MQTT gateway: publish this channel's packets
+    downlink: false          # MQTT gateway: transmit packets received from MQTT on LoRa
 ```
+
+Position is broadcast on the first channel; requests are answered on the channel they arrived on.
 
 ### Packet Relaying
 
@@ -262,6 +268,41 @@ meshtastic:
     role: CLIENT
     slot_time: 9ms   # SHORT_FAST
 ```
+
+### MQTT Gateway
+
+With `uplink`/`downlink` on a channel and the `mqtt:` component configured, the node is a
+Meshtastic MQTT gateway. Packets are exchanged still encrypted as `ServiceEnvelope` protobufs.
+Uplink publishes packets heard on LoRa whose sender set `ok_to_mqtt`, and our own packets.
+Downlink transmits packets of that channel received from other gateways; it requires
+`ignore_mqtt: false`.
+
+```yaml
+mqtt:
+  broker: mqtt.example.org
+  username: !secret mqtt_user
+  password: !secret mqtt_password
+  discovery: false
+  log_topic: null
+  reboot_timeout: 0s       # do not reboot the node when the broker is unreachable
+
+meshtastic:
+  - id: mesh_node
+    mqtt_root_topic: msh/EU_868
+    ignore_mqtt: false
+    channels:
+      - name: LongFast
+        psk: "AQ=="
+        uplink: true
+        downlink: true
+```
+
+### Learned Node Keys
+
+Public keys from received NodeInfo packets are stored in flash (up to 16 nodes, trust on first
+use: a known key is never replaced). Direct (PKI) messages then work without listing the node in
+`nodes:`. On a direct message from an unknown node, our NodeInfo is sent to it with
+`want_response` to obtain its key. Keys in `nodes:` always take precedence.
 
 ### Node Configuration
 

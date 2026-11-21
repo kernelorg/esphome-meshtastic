@@ -54,6 +54,10 @@ CONF_BROADCAST_INTERVAL = "broadcast_interval"
 CONF_HW_MODEL = "hw_model"
 
 CONF_EXCLUDE_PKI = "exclude_pki"
+CONF_POSITION_PRECISION = "position_precision"
+CONF_UPLINK = "uplink"
+CONF_DOWNLINK = "downlink"
+CONF_MQTT_ROOT_TOPIC = "mqtt_root_topic"
 
 meshtastic_ns = cg.esphome_ns.namespace("meshtastic")
 Meshtastic = meshtastic_ns.class_("Meshtastic", cg.Component)
@@ -97,6 +101,11 @@ CHANNEL_SCHEMA = cv.Schema(
         cv.GenerateID(): cv.declare_id(Channel),
         cv.Required(CONF_NAME): cv.string,
         cv.Required(CONF_PSK): validate_encryption_key,
+        # Bits of lat/lon sent on this channel (32 = exact, 0 = no position on this channel)
+        cv.Optional(CONF_POSITION_PRECISION, default=32): cv.int_range(0, 32),
+        # MQTT gateway (needs the mqtt: component)
+        cv.Optional(CONF_UPLINK, default=False): cv.boolean,
+        cv.Optional(CONF_DOWNLINK, default=False): cv.boolean,
     },
 )
 
@@ -217,6 +226,7 @@ CONFIG_SCHEMA = cv.All(
                 ),
                 cv.Optional(CONF_POSITION): cv.All(cv.ensure_list(POSITION_SCHEMA)),
                 cv.Optional(CONF_EXCLUDE_PKI): cv.boolean,
+                cv.Optional(CONF_MQTT_ROOT_TOPIC, default="msh/EU_868"): cv.publish_topic,
             }
         )
     ),
@@ -242,6 +252,13 @@ async def to_code(configs):
         cg.add(var.set_ignore_mqtt(config[CONF_IGNOREMQTT]))
         cg.add(var.set_ok_to_mqtt(config[CONF_OKTOMQTT]))
         cg.add(var.set_hw_model(config[CONF_HW_MODEL]))
+        cg.add(var.set_mqtt_root_topic(config[CONF_MQTT_ROOT_TOPIC]))
+        if any(
+            ch[CONF_UPLINK] or ch[CONF_DOWNLINK] for ch in config.get(CONF_CHANNELS, [])
+        ):
+            cg.add(var.set_mqtt_gateway(True))
+            # ServiceEnvelope uses nanopb POINTER fields; decoding them needs malloc
+            cg.add_build_flag("-DPB_ENABLE_MALLOC")
         if on_packet := config.get(CONF_ON_PACKET):
             on_packet = on_packet[0]
             trigger = cg.new_Pvariable(on_packet[CONF_TRIGGER_ID])
@@ -272,6 +289,9 @@ async def to_code(configs):
                     var.add_channel(
                         channel.get(CONF_NAME),
                         list(base64.b64decode(channel.get(CONF_PSK))),
+                        channel[CONF_POSITION_PRECISION],
+                        channel[CONF_UPLINK],
+                        channel[CONF_DOWNLINK],
                     )
                 )
         nodes = config.get(CONF_NODES, [])
@@ -389,3 +409,18 @@ async def send_text_message_action_to_code(config, action_id, template_arg, args
     template_ = await cg.templatable(config[CONF_CHANNEL], args, cg.std_string)
     cg.add(var.set_channel(template_))
     return var
+
+
+def _final_validate(configs):
+    import esphome.final_validate as fv
+
+    full = fv.full_config.get()
+    for config in configs:
+        if any(
+            ch[CONF_UPLINK] or ch[CONF_DOWNLINK] for ch in config.get(CONF_CHANNELS, [])
+        ) and "mqtt" not in full:
+            raise cv.Invalid("channel uplink/downlink needs the 'mqtt:' component")
+    return configs
+
+
+FINAL_VALIDATE_SCHEMA = _final_validate

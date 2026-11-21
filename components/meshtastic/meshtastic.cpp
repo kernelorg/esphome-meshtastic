@@ -6,6 +6,9 @@
 #include "esphome/components/network/util.h"
 
 #include "meshtastic.h"
+#ifdef USE_MQTT
+#include "esphome/components/mqtt/mqtt_client.h"
+#endif
 
 #include <pb_decode.h>
 #include <pb_encode.h>
@@ -390,6 +393,8 @@ void Meshtastic::setup() {
     position_broadcast_interval_ = std::max<uint32_t>(position_broadcast_interval_, (15*60*1000));
     this->set_interval("Owner Position", position_broadcast_interval_, [this] { this->send_our_node_position(NODENUM_BROADCAST, 0, meshtastic_MeshPacket_Priority_BACKGROUND); });
   }
+  this->load_learned_nodes_();
+  this->mqtt_setup_();
 }
 
 void Meshtastic::loop() {
@@ -716,6 +721,12 @@ bool Meshtastic::transmit_packet_encrypt(meshtastic_MeshPacket &mp, bool want_re
   if (!transmit_radio_packet(&mp)) {
     ESP_LOGW(TAG, "transmit_radio_packet timeout");
   }
+  this->packet_history_.wasSeenRecently(mp, true);  // so our own packet is not relayed back from MQTT/LoRa
+
+  if (mp.channel != 0 || mp.to == NODENUM_BROADCAST) {
+    if (auto *ch = get_channel_by_hash(mp.channel))
+      this->mqtt_uplink_(mp, *ch);
+  }
 
   if (this->use_udp_) {
     transmit_udp_packet(&mp);
@@ -777,9 +788,23 @@ void Meshtastic::send_our_node_position(NodeNum to, uint8_t channel, meshtastic_
   mp.want_ack = false;
   mp.via_mqtt = false;
 
+  // Per-channel precision, as Meshtastic PositionModule: keep the top N bits, report the cell centre
+  Channel *pos_channel = get_channel_by_hash(mp.channel);
+  uint8_t precision = pos_channel ? pos_channel->get_position_precision() : 32;
+  if (precision == 0) {
+    ESP_LOGD(TAG, "Position disabled on channel 0x%02x (position_precision 0)", mp.channel);
+    return;
+  }
   owner_position.seq_number++;
+  meshtastic_Position pos = owner_position;
+  if (precision < 32) {
+    uint32_t mask = UINT32_MAX << (32 - precision);
+    pos.latitude_i = (int32_t) (((uint32_t) pos.latitude_i & mask) + (1u << (31 - precision)));
+    pos.longitude_i = (int32_t) (((uint32_t) pos.longitude_i & mask) + (1u << (31 - precision)));
+  }
+  pos.precision_bits = precision;
   mp.decoded.portnum = meshtastic_PortNum_POSITION_APP;
-  mp.decoded.payload.size = pb_encode_to_bytes(mp.decoded.payload.bytes, sizeof(mp.decoded.payload.bytes), &meshtastic_Position_msg, &owner_position);
+  mp.decoded.payload.size = pb_encode_to_bytes(mp.decoded.payload.bytes, sizeof(mp.decoded.payload.bytes), &meshtastic_Position_msg, &pos);
 
   transmit_packet_encrypt(mp);
 }
@@ -930,11 +955,13 @@ void Meshtastic::handle_received_packet(meshtastic_MeshPacket &mp) {
 
   uint8_t decrypted_data[MAX_LORA_PAYLOAD_LEN];
   size_t payload_len = mp.encrypted.size;
+  Channel *rx_channel = nullptr;
   if(mp.channel == 0 && mp.to == this->node_num_) {
 #if !defined(MESHTASTIC_EXCLUDE_PKI)
     Node* src_node = get_node_by_num(mp.from);
-    if(src_node == nullptr) {
-      ESP_LOGW(TAG, "No node found for num 0x%08x to decrypt with Curve25519", mp.from);
+    if(src_node == nullptr || src_node->public_key_.size() != 32) {
+      ESP_LOGW(TAG, "No public key for 0x%08x to decrypt with Curve25519, requesting NodeInfo", mp.from);
+      this->request_node_info_(mp.from);
       return;
     }
     if(!decrypt_curve25519(mp.from, src_node->public_key_.data(), mp.id, payload_len, mp.encrypted.bytes, decrypted_data)) {
@@ -953,6 +980,7 @@ void Meshtastic::handle_received_packet(meshtastic_MeshPacket &mp) {
       ESP_LOGW(TAG, "No channel found for hash 0x%02x", mp.channel);
       return;
     }
+    rx_channel = channel;
     channel_name = channel->get_name();
     psk_t key = channel->get_psk();
     if(key.empty()) {
@@ -972,6 +1000,11 @@ void Meshtastic::handle_received_packet(meshtastic_MeshPacket &mp) {
     ESP_LOGI(TAG, "Decoded meshtastic_Data request_id=%x ch_name=%s portnum=%d payload len=%d want_response=%d", decodedtmp.request_id, channel_name.c_str(), decodedtmp.portnum, decodedtmp.payload.size, decodedtmp.want_response);
 
     packet_history_.wasSeenRecently(mp);
+
+    // Gateway uplink: only packets heard on LoRa whose sender allowed MQTT (Meshtastic rule)
+    if (rx_channel != nullptr && mp.transport_mechanism == meshtastic_MeshPacket_TransportMechanism_TRANSPORT_LORA &&
+        !mp.via_mqtt && decodedtmp.has_bitfield && (decodedtmp.bitfield & BITFIELD_OK_TO_MQTT_MASK))
+      this->mqtt_uplink_(mp, *rx_channel);
 
     std::vector<uint8_t> decoded_packet(decodedtmp.payload.bytes, decodedtmp.payload.bytes + decodedtmp.payload.size);
     this->packet_listeners_.call(mp.from, mp.to, decodedtmp.portnum, decoded_packet);
@@ -1000,6 +1033,7 @@ void Meshtastic::handle_received_packet(meshtastic_MeshPacket &mp) {
       meshtastic_User user_msg = {};
       if (pb_decode_from_bytes(decodedtmp.payload.bytes, decodedtmp.payload.size, &meshtastic_User_msg, &user_msg)) {
         ESP_LOGI(TAG, "Node Info: %s (%s) %s\n", user_msg.long_name, user_msg.short_name, format_hex_pretty(user_msg.macaddr, 6, ':', false).c_str());
+        this->learn_node_(mp.from, user_msg);
         if(decodedtmp.want_response && mp.to == this->node_num_) {
           send_our_node_info(mp.from, mp.channel, meshtastic_MeshPacket_Priority_DEFAULT);
         }
@@ -1129,12 +1163,19 @@ void Meshtastic::on_packet(const std::vector<uint8_t> &packet, float rssi, float
   mp.rx_snr = snr;
   mp.rx_rssi = rssi;
   mp.rx_time = ::time(nullptr);
+  mp.which_payload_variant = meshtastic_MeshPacket_encrypted_tag;
+  this->process_rx_(packet, mp, snr);
+  pb_release(&meshtastic_MeshPacket_msg, &mp);
+}
 
+// Common receive path for LoRa and MQTT downlink: dedup, local handling, relay
+void Meshtastic::process_rx_(const std::vector<uint8_t> &packet, meshtastic_MeshPacket &mp, float snr) {
   // Flood routing: decide before handle_received_packet(), which records the packet as seen
   bool already_seen = this->packet_history_.wasSeenRecently(mp, false);
   if (already_seen)
     this->cancel_relay_(mp.from, mp.id);
-  bool relay = !already_seen && this->relay_role_ != RELAY_ROLE_CLIENT_MUTE && mp.id != 0 &&
+  bool from_mqtt = mp.transport_mechanism == meshtastic_MeshPacket_TransportMechanism_TRANSPORT_MQTT;
+  bool relay = !already_seen && (this->relay_role_ != RELAY_ROLE_CLIENT_MUTE || from_mqtt) && mp.id != 0 &&
                mp.from != this->node_num_ && mp.to != this->node_num_ && mp.hop_limit > 0 &&
                (mp.next_hop == 0 || mp.next_hop == (this->node_num_ & 0xFF)) &&
                !(this->ignore_mqtt_ && mp.via_mqtt);
@@ -1144,10 +1185,11 @@ void Meshtastic::on_packet(const std::vector<uint8_t> &packet, float rssi, float
     this->packet_history_.wasSeenRecently(mp, true);  // also undecodable (foreign channel / PKI) packets
   if (relay)
     this->schedule_relay_(packet, mp, snr);
-  if(this->bridge_mode_ && this->use_udp_) {
+#if defined(USE_SOCKET_IMPL_BSD_SOCKETS) || defined(USE_SOCKET_IMPL_LWIP_SOCKETS)
+  if(this->bridge_mode_ && this->use_udp_ && mp.transport_mechanism == meshtastic_MeshPacket_TransportMechanism_TRANSPORT_LORA) {
     transmit_udp_packet(&mp);
   }
-  pb_release(&meshtastic_MeshPacket_msg, &mp);
+#endif
 }
 
 // Contention window as in Meshtastic RadioInterface::getTxDelayMsecWeighted():
@@ -1211,6 +1253,180 @@ void Meshtastic::process_relays_() {
       ++it;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Learned node keys
+// ---------------------------------------------------------------------------
+void Meshtastic::load_learned_nodes_() {
+  this->learned_pref_ = global_preferences->make_preference<LearnedNodesStore>(fnv1_hash("meshtastic_learned_nodes"));
+  if (!this->learned_pref_.load(&this->learned_store_)) {
+    memset(&this->learned_store_, 0, sizeof(this->learned_store_));
+    return;
+  }
+  int n = 0;
+  for (auto &r : this->learned_store_.nodes) {
+    if (r.num == 0 || r.num == this->node_num_)
+      continue;
+    Node *node = get_node_by_num(r.num);
+    if (node != nullptr)
+      continue;  // configured in YAML, YAML wins
+    auto nn = std::make_unique<Node>();
+    nn->node_num_ = r.num;
+    nn->public_key_.assign(r.key, r.key + 32);
+    nn->learned_ = true;
+    this->nodes_.push_back(std::move(nn));
+    n++;
+  }
+  ESP_LOGI(TAG, "Loaded %d learned node keys", n);
+}
+
+void Meshtastic::learn_node_(NodeNum num, const meshtastic_User &user) {
+  if (num == this->node_num_ || user.public_key.size != 32)
+    return;
+  Node *node = get_node_by_num(num);
+  if (node != nullptr) {
+    if (node->public_key_.size() == 32) {
+      if (memcmp(node->public_key_.data(), user.public_key.bytes, 32) != 0)
+        ESP_LOGW(TAG, "Node 0x%08" PRIx32 " announced a different public key, keeping the known one", num);
+      return;  // key pinned (trust on first use)
+    }
+    node->public_key_.assign(user.public_key.bytes, user.public_key.bytes + 32);
+  } else {
+    auto nn = std::make_unique<Node>();
+    nn->node_num_ = num;
+    nn->name_ = user.long_name;
+    nn->name_short_ = user.short_name;
+    nn->public_key_.assign(user.public_key.bytes, user.public_key.bytes + 32);
+    nn->learned_ = true;
+    this->nodes_.push_back(std::move(nn));
+  }
+  ESP_LOGI(TAG, "Learned public key of 0x%08" PRIx32 " (%s)", num, user.short_name);
+
+  // Persist: replace an existing slot for this node or the oldest one
+  auto &st = this->learned_store_;
+  int slot = -1;
+  for (int i = 0; i < MAX_LEARNED_NODES; i++)
+    if (st.nodes[i].num == num) slot = i;
+  if (slot < 0) {
+    slot = st.next % MAX_LEARNED_NODES;
+    st.next = (st.next + 1) % MAX_LEARNED_NODES;
+    uint32_t evicted = st.nodes[slot].num;
+    if (evicted != 0) {
+      // drop the evicted learned node from RAM too
+      for (auto it = this->nodes_.begin(); it != this->nodes_.end(); ++it)
+        if ((*it)->learned_ && (*it)->node_num_ == evicted) { this->nodes_.erase(it); break; }
+    }
+  }
+  st.nodes[slot].num = num;
+  memcpy(st.nodes[slot].key, user.public_key.bytes, 32);
+  this->set_timeout("meshtastic_save_nodes", 10000, [this]() { this->learned_pref_.save(&this->learned_store_); });
+}
+
+void Meshtastic::request_node_info_(NodeNum num) {
+  uint32_t now = millis();
+  auto it = this->nodeinfo_requested_.find(num);
+  if (it != this->nodeinfo_requested_.end() && now - it->second < 10 * 60 * 1000)
+    return;
+  this->nodeinfo_requested_[num] = now;
+  // Send our NodeInfo with want_response on the primary channel; the reply carries their key
+  meshtastic_MeshPacket mp;
+  memset(&mp, 0, sizeof(mp));
+  if (channels_.empty())
+    return;
+  mp.channel = channels_.front().get_hash();
+  mp.to = num;
+  mp.from = node_num_;
+  mp.id = generatePacketId();
+  mp.priority = meshtastic_MeshPacket_Priority_DEFAULT;
+  mp.hop_limit = this->hop_limit_;
+  mp.decoded.portnum = meshtastic_PortNum_NODEINFO_APP;
+  mp.decoded.want_response = true;
+  mp.decoded.payload.size = pb_encode_to_bytes(mp.decoded.payload.bytes, sizeof(mp.decoded.payload.bytes), &meshtastic_User_msg, &owner);
+  transmit_packet_encrypt(mp, true);
+}
+
+// ---------------------------------------------------------------------------
+// MQTT gateway (topics as Meshtastic: <root>/2/e/<channel>/<gateway id>)
+// ---------------------------------------------------------------------------
+void Meshtastic::mqtt_setup_() {
+#ifdef USE_MQTT
+  if (!this->mqtt_gateway_ || mqtt::global_mqtt_client == nullptr)
+    return;
+  for (auto &ch : this->channels_) {
+    if (!ch.get_downlink())
+      continue;
+    std::string topic = this->mqtt_root_topic_ + "/2/e/" + ch.get_name() + "/+";
+    ESP_LOGI(TAG, "MQTT downlink: %s", topic.c_str());
+    mqtt::global_mqtt_client->subscribe(topic, [this](const std::string &t, const std::string &p) { this->on_mqtt_message_(t, p); });
+  }
+#endif
+}
+
+void Meshtastic::mqtt_uplink_(meshtastic_MeshPacket &mp, const Channel &ch) {
+#ifdef USE_MQTT
+  if (!this->mqtt_gateway_ || !ch.get_uplink() || mp.via_mqtt)
+    return;
+  auto *client = mqtt::global_mqtt_client;
+  if (client == nullptr || !client->is_connected())
+    return;
+  std::string channel_id = ch.get_name();
+  meshtastic_ServiceEnvelope env = meshtastic_ServiceEnvelope_init_default;
+  mp.which_payload_variant = meshtastic_MeshPacket_encrypted_tag;
+  env.packet = &mp;
+  env.channel_id = const_cast<char *>(channel_id.c_str());
+  env.gateway_id = owner.id;
+  uint8_t buf[600];
+  size_t len = pb_encode_to_bytes(buf, sizeof(buf), &meshtastic_ServiceEnvelope_msg, &env);
+  if (len == 0) {
+    ESP_LOGW(TAG, "MQTT uplink: encode failed");
+    return;
+  }
+  std::string topic = this->mqtt_root_topic_ + "/2/e/" + channel_id + "/" + owner.id;
+  if (client->publish(topic, reinterpret_cast<const char *>(buf), len, 0, false))
+    ESP_LOGD(TAG, "MQTT uplink id=%08" PRIx32 " fr=%08" PRIx32 " -> %s", mp.id, mp.from, topic.c_str());
+#endif
+}
+
+void Meshtastic::on_mqtt_message_(const std::string &topic, const std::string &payload) {
+#ifdef USE_MQTT
+  meshtastic_ServiceEnvelope env = meshtastic_ServiceEnvelope_init_default;
+  if (!pb_decode_from_bytes(reinterpret_cast<const uint8_t *>(payload.data()), payload.size(), &meshtastic_ServiceEnvelope_msg, &env)) {
+    ESP_LOGV(TAG, "MQTT downlink: not a ServiceEnvelope on %s", topic.c_str());
+    return;
+  }
+  do {
+    if (env.packet == nullptr || env.channel_id == nullptr)
+      break;
+    if (env.gateway_id != nullptr && strcmp(env.gateway_id, owner.id) == 0)
+      break;  // our own uplink
+    meshtastic_MeshPacket &p = *env.packet;
+    if (p.which_payload_variant != meshtastic_MeshPacket_encrypted_tag || p.from == this->node_num_)
+      break;
+    Channel *ch = get_channel_by_name(env.channel_id);
+    if (ch == nullptr || !ch->get_downlink() || p.channel != ch->get_hash())
+      break;
+    if (p.encrypted.size > MAX_LORA_PAYLOAD_LEN + 1 - sizeof(PacketHeader))
+      break;
+    p.via_mqtt = true;
+    p.transport_mechanism = meshtastic_MeshPacket_TransportMechanism_TRANSPORT_MQTT;
+    RadioBuffer rb;
+    memset(&rb, 0, sizeof(rb));
+    rb.header.from = p.from;
+    rb.header.to = p.to;
+    rb.header.id = p.id;
+    rb.header.channel = p.channel;
+    rb.header.next_hop = p.next_hop;
+    rb.header.relay_node = p.relay_node;
+    rb.header.flags = (p.hop_limit & PACKET_FLAGS_HOP_LIMIT_MASK) | (p.want_ack ? PACKET_FLAGS_WANT_ACK_MASK : 0) |
+                      PACKET_FLAGS_VIA_MQTT_MASK | ((p.hop_start << PACKET_FLAGS_HOP_START_SHIFT) & PACKET_FLAGS_HOP_START_MASK);
+    memcpy(rb.payload, p.encrypted.bytes, p.encrypted.size);
+    std::vector<uint8_t> raw(reinterpret_cast<const uint8_t *>(&rb), reinterpret_cast<const uint8_t *>(&rb) + sizeof(PacketHeader) + p.encrypted.size);
+    ESP_LOGD(TAG, "MQTT downlink id=%08" PRIx32 " fr=%08" PRIx32 " ch=%s", p.id, p.from, env.channel_id);
+    this->process_rx_(raw, p, 0.0f);
+  } while (false);
+  pb_release(&meshtastic_ServiceEnvelope_msg, &env);
+#endif
 }
 
 }  // namespace meshtastic

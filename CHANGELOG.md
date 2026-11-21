@@ -1,5 +1,20 @@
 # Changelog
 
+## v2
+
+- Channel option `position_precision` (0..32, default 32): position is rounded like Meshtastic
+  (cell centre, `precision_bits` set); `0` sends no position on that channel. Position is
+  broadcast on the first channel, requests are answered on the channel they arrived on.
+- Learned node keys: public keys from NodeInfo are stored in flash (16 nodes, trust on first
+  use, keys in `nodes:` take precedence). A direct message from an unknown node triggers a
+  NodeInfo request with `want_response`.
+- MQTT gateway on top of the ESPHome `mqtt:` component: channel options `uplink`/`downlink`,
+  component option `mqtt_root_topic` (default `msh/EU_868`); topics
+  `<root>/2/e/<channel>/<gateway id>`, encrypted `ServiceEnvelope` payloads. Uplink honours
+  `ok_to_mqtt` and skips `via_mqtt` packets; downlink drops our own envelopes and duplicates
+  and is transmitted on LoRa through the relay path (needs `ignore_mqtt: false`).
+- Validation error when `uplink`/`downlink` is set without `mqtt:`.
+
 ## v1
 
 - Build without the `wifi:` component (Ethernet-only boards): `esp_wifi.h` and

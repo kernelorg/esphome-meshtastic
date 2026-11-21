@@ -21,8 +21,11 @@
 #endif
 
 #include "mesh.pb.h"
+#include "mqtt.pb.h"
+#include "esphome/core/preferences.h"
 
 #include <unordered_set>
+#include <unordered_map>
 
 
 #define NODENUM_BROADCAST UINT32_MAX
@@ -76,6 +79,18 @@ struct Node {
     NodeNum node_num_;
     std::vector<uint8_t> private_key_;
     std::vector<uint8_t> public_key_;
+    bool learned_ = false;  // public key learned from NodeInfo (not from YAML)
+};
+
+// Learned public keys, persisted in flash
+#define MAX_LEARNED_NODES 16
+struct LearnedNodeRecord {
+  uint32_t num;
+  uint8_t key[32];
+};
+struct LearnedNodesStore {
+  uint32_t next;  // ring index for replacement
+  LearnedNodeRecord nodes[MAX_LEARNED_NODES];
 };
 
 class Channel {
@@ -83,7 +98,16 @@ class Channel {
   std::string name_;
   psk_t psk_;
   uint8_t hash_;
+  uint8_t position_precision_ = 32;  // bits kept in lat/lon; 0 = never send position on this channel
+  bool uplink_ = false;              // MQTT gateway: publish packets of this channel
+  bool downlink_ = false;            // MQTT gateway: transmit packets of this channel received from MQTT
  public:
+  void set_position_precision(uint8_t p) { this->position_precision_ = p; };
+  uint8_t get_position_precision() const { return this->position_precision_; };
+  void set_uplink(bool v) { this->uplink_ = v; };
+  bool get_uplink() const { return this->uplink_; };
+  void set_downlink(bool v) { this->downlink_ = v; };
+  bool get_downlink() const { return this->downlink_; };
   void set_name(const std::string &name) { this->name_ = name; };
   std::string get_name() const { return this->name_; };
   void set_psk(const psk_t &psk);
@@ -173,6 +197,20 @@ class Meshtastic : public Component
   uint32_t relay_tx_count_ = 0;
   uint32_t relay_cancel_count_ = 0;
   std::vector<PendingRelay> pending_relays_;
+  void process_rx_(const std::vector<uint8_t> &packet, meshtastic_MeshPacket &mp, float snr);
+  // Learned node keys (TOFU, like Meshtastic NodeDB)
+  ESPPreferenceObject learned_pref_;
+  LearnedNodesStore learned_store_{};
+  std::unordered_map<NodeNum, uint32_t> nodeinfo_requested_;
+  void load_learned_nodes_();
+  void learn_node_(NodeNum num, const meshtastic_User &user);
+  void request_node_info_(NodeNum num);
+  // MQTT gateway
+  std::string mqtt_root_topic_ = "msh/EU_868";
+  bool mqtt_gateway_ = false;
+  void mqtt_setup_();
+  void mqtt_uplink_(meshtastic_MeshPacket &mp, const Channel &ch);
+  void on_mqtt_message_(const std::string &topic, const std::string &payload);
   void schedule_relay_(const std::vector<uint8_t> &packet, const meshtastic_MeshPacket &mp, float snr);
   void cancel_relay_(NodeNum from, PacketId id);
   void process_relays_();
@@ -209,7 +247,19 @@ class Meshtastic : public Component
 #ifdef USE_SX127X
   void set_lora(sx127x::SX127x* sx);
 #endif
-  void add_channel(const std::string &name, const std::vector<uint8_t> &psk) {this->channels_.push_back(Channel()); this->channels_.back().set_name(name); this->channels_.back().set_psk(psk); this->channels_.back().generate_hash(); };
+  void add_channel(const std::string &name, const std::vector<uint8_t> &psk, uint8_t position_precision = 32,
+                   bool uplink = false, bool downlink = false) {
+    this->channels_.push_back(Channel());
+    Channel &c = this->channels_.back();
+    c.set_name(name);
+    c.set_psk(psk);
+    c.generate_hash();
+    c.set_position_precision(position_precision);
+    c.set_uplink(uplink);
+    c.set_downlink(downlink);
+  };
+  void set_mqtt_root_topic(const std::string &t) { this->mqtt_root_topic_ = t; };
+  void set_mqtt_gateway(bool v) { this->mqtt_gateway_ = v; };
   void add_node(NodeNum node_num, const std::string &name, const std::string &short_name, const std::vector<uint8_t> &public_key, const std::vector<uint8_t> &private_key) {
       auto node = std::make_unique<Node>();
       node->name_ = name;
