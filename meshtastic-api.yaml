@@ -1,0 +1,177 @@
+# Example: Ethernet-only Meshtastic node with the Meshtastic client API and Home Assistant entities
+# Board: Olimex ESP32-PoE2 (LAN8720) + Seeed Wio-SX1262 on EXT1, region EU_868, preset SHORT_FAST
+#
+# Web client: run it locally (docker run -p 8080:8080 ghcr.io/meshtastic/web), open
+# http://localhost:8080 and connect via HTTP to the node's IP.
+#
+# secrets.yaml:
+#   api_key: "<32-byte base64>"            # esphome API encryption key
+#   node_private_key: "<32-byte base64>"   # meshtastic node keys (Curve25519)
+#   node_public_key: "<32-byte base64>"
+#   private_channel_psk: "<16/32-byte base64>"
+
+esphome:
+  name: meshtastic-api
+  friendly_name: Meshtastic API
+
+esp32:
+  variant: esp32
+  flash_size: 4MB
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_MBEDTLS_CCM_C: y
+
+logger:
+  level: DEBUG
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+
+psram:
+
+# No wifi: block needed; the component builds Ethernet-only
+ethernet:
+  type: LAN8720
+  clk:
+    mode: CLK_OUT
+    pin: GPIO0
+  mdc_pin: GPIO23
+  mdio_pin: GPIO18
+  phy_addr: 0
+  power_pin:
+    number: GPIO12
+    ignore_strapping_warning: true
+
+time:
+  - platform: sntp
+
+external_components:
+  - source: github://kernelorg/esphome-meshtastic@v3
+    components: [meshtastic]
+    refresh: 24h
+
+# ---------------------------------------------------------------------------
+# LoRa: Wio-SX1262
+# ---------------------------------------------------------------------------
+spi:
+  clk_pin: GPIO14
+  mosi_pin: GPIO13
+  miso_pin: GPIO35
+
+sx126x:
+  id: lora_radio
+  hw_version: sx1262
+  modulation: LORA
+  rf_switch: true          # DIO2 drives the antenna switch
+  tcxo_voltage: 1_8V
+  tcxo_delay: 5ms
+  cs_pin: GPIO5
+  rst_pin: GPIO4
+  busy_pin: GPIO32
+  dio1_pin: GPIO33
+  pa_power: 14             # dBm; mind the EIRP limit of your band and antenna gain
+  frequency: 869525000     # EU_868
+  # SHORT_FAST preset
+  spreading_factor: 7
+  bandwidth: 250_0kHz
+  coding_rate: CR_4_5
+  crc_enable: true
+  rx_start: true
+  sync_value: [0x20, 0xb0] # Meshtastic sync word
+  preamble_size: 16
+
+# Wio-SX1262 RF_SW: HIGH = RX path
+output:
+  - platform: gpio
+    id: rf_sw_out
+    pin:
+      number: GPIO15
+      ignore_strapping_warning: true
+
+switch:
+  - platform: output
+    id: rf_sw
+    output: rf_sw_out
+    restore_mode: ALWAYS_ON
+    internal: true
+
+# ---------------------------------------------------------------------------
+# Meshtastic
+# ---------------------------------------------------------------------------
+meshtastic:
+  - id: mesh_node
+    lora: lora_radio
+    hw_model: 39             # DIY_V1
+    hop_limit: 3
+    role: CLIENT             # relay packets
+    slot_time: 9ms           # SHORT_FAST
+    exclude_pki: false
+    ignore_mqtt: true
+    ok_to_mqtt: true
+
+    client_api:              # Meshtastic client HTTP API on its own server
+      port: 80
+      region: EU_868         # reported to the client only
+      modem_preset: SHORT_FAST
+
+    position:
+      latitude: 50.0614      # example coordinates
+      longitude: 19.9366
+      altitude: 220
+      broadcast_interval: 1h
+
+    channels:
+      - name: ShortFast
+        psk: "AQ=="          # default key
+        position_precision: 13   # ~3 km on the public channel
+      - name: private
+        psk: !secret private_channel_psk
+
+    nodes:
+      - node_number: 0       # this node
+        name: "ESPHome Mesh"
+        short_name: "ESPH"
+        private_key: !secret node_private_key
+        public_key: !secret node_public_key
+        broadcast_interval: 3h
+      # Other nodes are learned from NodeInfo; list a peer here to pin its key:
+      # - node_number: 0x12345678
+      #   name: "Peer"
+      #   short_name: "PEER"
+      #   public_key: "<32-byte base64>"
+
+    # Every received text message, also repeated ones -> Home Assistant event
+    on_text_message:
+      - homeassistant.event:
+          event: esphome.mesh_text
+          data:
+            sender: !lambda return sender;
+            channel: !lambda return channel;   # "" = direct message
+            text: !lambda return text;
+
+# ---------------------------------------------------------------------------
+# Home Assistant: received text, destination and send
+# ---------------------------------------------------------------------------
+text_sensor:
+  - platform: meshtastic
+    type: last_message
+    name: "Mesh last message"
+  - platform: meshtastic
+    type: last_sender
+    name: "Mesh last sender"
+  - platform: meshtastic
+    type: last_channel       # "direct" for direct messages
+    name: "Mesh last channel"
+
+select:
+  - platform: meshtastic     # channels, then nodes from nodes:
+    name: "Mesh destination"
+
+text:
+  - platform: meshtastic     # setting a value sends it to the selected destination
+    name: "Mesh send"

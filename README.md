@@ -306,6 +306,8 @@ meshtastic:
 
 ### Meshtastic Client API
 
+Complete example: [meshtastic-api.yaml](meshtastic-api.yaml) (Ethernet-only ESP32-PoE2 + SX1262, client API, Home Assistant entities).
+
 Implements the HTTP transport of the Meshtastic clients (`PUT /api/v1/toradio`,
 `GET /api/v1/fromradio`), so the Meshtastic web client can connect to the node, show nodes and
 channels, and send/receive messages. It runs its own HTTP server (the ESPHome `web_server` has

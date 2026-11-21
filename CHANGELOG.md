@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Example `meshtastic-api.yaml`: Ethernet-only node with the client API and Home Assistant entities.
+
 ## v3
 
 - Meshtastic client API: `client_api` (port, region, modem_preset) serves
