@@ -437,6 +437,35 @@ void Meshtastic::client_send_config_(uint32_t nonce) {
     }
   }
 
+  if (nonce != NONCE_ONLY_NODES) {
+    // Module configs newer than our generated protobufs (statusmessage 14, traffic_management 15,
+    // tak 16): send them empty (= defaults), hand-encoded, so clients stop waiting.
+    for (uint32_t field : {14u, 15u, 16u}) {
+      uint8_t inner[4];
+      size_t n = 0;
+      uint32_t key = (field << 3) | 2;  // length-delimited
+      while (key >= 0x80) {
+        inner[n++] = (key & 0x7F) | 0x80;
+        key >>= 7;
+      }
+      inner[n++] = key;
+      inner[n++] = 0;  // empty message
+      std::vector<uint8_t> buf;
+      uint32_t id = ++this->client_fromradio_id_;
+      buf.push_back(0x08);  // FromRadio.id
+      while (id >= 0x80) {
+        buf.push_back((id & 0x7F) | 0x80);
+        id >>= 7;
+      }
+      buf.push_back(id);
+      buf.push_back(0x4A);  // FromRadio.moduleConfig (field 9, length-delimited)
+      buf.push_back(n);
+      buf.insert(buf.end(), inner, inner + n);
+      LockGuard lock(this->client_mutex_);
+      q.push_back(std::move(buf));
+    }
+  }
+
   reset(meshtastic_FromRadio_config_complete_id_tag);
   fr->config_complete_id = nonce;
   this->client_push_(q, *fr, 0);
