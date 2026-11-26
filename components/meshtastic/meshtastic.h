@@ -225,6 +225,8 @@ class Meshtastic : public Component
   // MQTT gateway
   std::string mqtt_root_topic_ = "msh/EU_868";
   bool mqtt_gateway_ = false;
+  bool mqtt_announced_ = false;  // NodeInfo + position sent once the broker is connected
+  void mqtt_loop_();
   void mqtt_setup_();
   void mqtt_uplink_(meshtastic_MeshPacket &mp, const Channel &ch);
   void on_mqtt_message_(const std::string &topic, const std::string &payload);

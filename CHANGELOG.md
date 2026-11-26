@@ -10,6 +10,8 @@
   air_util_tx from LoRa airtime) to the mesh every `telemetry_interval` (default 30 min), to
   clients every minute and in the node list; last DeviceMetrics of other nodes are kept and sent
   to clients in the node list.
+- MQTT gateway announces NodeInfo and position once the broker is connected, so the node appears
+  on MQTT maps without waiting for the next broadcast.
 - Example `meshtastic-api.yaml`: Ethernet-only node with the client API and Home Assistant entities.
 
 ## v3

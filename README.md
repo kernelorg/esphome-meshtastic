@@ -285,6 +285,10 @@ Uplink publishes packets heard on LoRa whose sender set `ok_to_mqtt`, and our ow
 Downlink transmits packets of that channel received from other gateways; it requires
 `ignore_mqtt: false`.
 
+On a public broker give every entity `state_topic: null`, otherwise ESPHome publishes their states
+(for example the `last_message` text sensor) there; they stay available to Home Assistant over the
+native API.
+
 ```yaml
 mqtt:
   broker: mqtt.example.org
@@ -293,6 +297,9 @@ mqtt:
   discovery: false
   log_topic: null
   reboot_timeout: 0s       # do not reboot the node when the broker is unreachable
+  birth_message: null      # nothing but Meshtastic packets on a public broker
+  will_message: null
+  shutdown_message: null
 
 meshtastic:
   - id: mesh_node

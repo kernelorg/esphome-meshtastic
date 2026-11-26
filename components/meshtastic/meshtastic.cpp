@@ -407,6 +407,7 @@ void Meshtastic::setup() {
 
 void Meshtastic::loop() {
   this->airtime_rotate_();
+  this->mqtt_loop_();
   this->process_relays_();
   this->client_api_loop_();
 #if defined(USE_SOCKET_IMPL_BSD_SOCKETS) || defined(USE_SOCKET_IMPL_LWIP_SOCKETS)
@@ -1386,6 +1387,24 @@ void Meshtastic::mqtt_setup_() {
     ESP_LOGI(TAG, "MQTT downlink: %s", topic.c_str());
     mqtt::global_mqtt_client->subscribe(topic, [this](const std::string &t, const std::string &p) { this->on_mqtt_message_(t, p); });
   }
+#endif
+}
+
+// The boot NodeInfo/position go out before the broker is connected; announce again so the
+// node shows up on MQTT maps without waiting for the next broadcast interval.
+void Meshtastic::mqtt_loop_() {
+#ifdef USE_MQTT
+  if (!this->mqtt_gateway_ || this->mqtt_announced_ || mqtt::global_mqtt_client == nullptr ||
+      !mqtt::global_mqtt_client->is_connected())
+    return;
+  this->mqtt_announced_ = true;
+  ESP_LOGI(TAG, "MQTT connected, announcing NodeInfo and position");
+  this->set_timeout("mqtt_announce", 5000, [this]() {
+    this->send_our_node_info(NODENUM_BROADCAST, 0, meshtastic_MeshPacket_Priority_BACKGROUND);
+    this->set_timeout("mqtt_announce_pos", 3000, [this]() {
+      this->send_our_node_position(NODENUM_BROADCAST, 0, meshtastic_MeshPacket_Priority_BACKGROUND);
+    });
+  });
 #endif
 }
 
