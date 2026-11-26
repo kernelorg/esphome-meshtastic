@@ -1,8 +1,12 @@
-# Example: Ethernet-only Meshtastic node with the Meshtastic client API and Home Assistant entities
+# Example: Ethernet-only Meshtastic node with the Meshtastic client APIs, Home Assistant entities,
+# device telemetry and an MQTT gateway.
 # Board: Olimex ESP32-PoE2 (LAN8720) + Seeed Wio-SX1262 on EXT1, region EU_868, preset SHORT_FAST
 #
-# Web client: run it locally (docker run -p 8080:8080 ghcr.io/meshtastic/web), open
-# http://localhost:8080 and connect via HTTP to the node's IP.
+# Clients:
+#   - Meshtastic web client over HTTP (port 80): run it locally
+#     (docker run -p 8080:8080 ghcr.io/meshtastic/web), open http://localhost:8080, connect to the node's IP
+#   - Home Assistant Meshtastic integration, `meshtastic --host <ip>`, apps: TCP port 4403
+# Give the node a fixed IP (DHCP reservation): clients connect by address.
 #
 # secrets.yaml:
 #   api_key: "<32-byte base64>"            # esphome API encryption key
@@ -50,8 +54,22 @@ ethernet:
 time:
   - platform: sntp
 
+# MQTT gateway (here: the public broker of the Polish community, see https://loranet.pl/mqtt).
+# Only Meshtastic packets may go to a public broker: no discovery, status, logs or IP,
+# and every entity below has state_topic: null.
+mqtt:
+  broker: loranet.pl
+  port: 1883
+  discovery: false
+  discover_ip: false
+  log_topic: null
+  birth_message: null
+  will_message: null
+  shutdown_message: null
+  reboot_timeout: 0s       # never reboot the node when the broker is unreachable
+
 external_components:
-  - source: github://kernelorg/esphome-meshtastic@v3
+  - source: github://kernelorg/esphome-meshtastic@v4
     components: [meshtastic]
     refresh: 24h
 
@@ -99,6 +117,7 @@ switch:
     output: rf_sw_out
     restore_mode: ALWAYS_ON
     internal: true
+    state_topic: null
 
 # ---------------------------------------------------------------------------
 # Meshtastic
@@ -114,10 +133,13 @@ meshtastic:
     ignore_mqtt: true
     ok_to_mqtt: true
 
-    client_api:              # Meshtastic client HTTP API on its own server
-      port: 80
-      region: EU_868         # reported to the client only
+    client_api:
+      port: 80               # HTTP API (web client), 0 = off
+      tcp_port: 4403         # TCP API (HA integration, CLI, apps), 0 = off
+      region: EU_868         # reported to clients only
       modem_preset: SHORT_FAST
+    telemetry_interval: 30min  # own DeviceMetrics to the mesh; clients get them every minute
+    mqtt_root_topic: msh/PL
 
     position:
       latitude: 50.0614      # example coordinates
@@ -128,9 +150,10 @@ meshtastic:
     channels:
       - name: ShortFast
         psk: "AQ=="          # default key
-        position_precision: 13   # ~3 km on the public channel
+        position_precision: 13   # ~3 km on the public channel (and on MQTT maps)
+        uplink: true         # MQTT gateway: publish this channel
       - name: private
-        psk: !secret private_channel_psk
+        psk: !secret private_channel_psk   # no uplink: stays off MQTT
 
     nodes:
       - node_number: 0       # this node
@@ -161,17 +184,22 @@ text_sensor:
   - platform: meshtastic
     type: last_message
     name: "Mesh last message"
+    state_topic: null        # not to the MQTT broker
   - platform: meshtastic
     type: last_sender
     name: "Mesh last sender"
+    state_topic: null        # not to the MQTT broker
   - platform: meshtastic
     type: last_channel       # "direct" for direct messages
     name: "Mesh last channel"
+    state_topic: null        # not to the MQTT broker
 
 select:
   - platform: meshtastic     # channels, then nodes from nodes:
     name: "Mesh destination"
+    state_topic: null        # not to the MQTT broker
 
 text:
   - platform: meshtastic     # setting a value sends it to the selected destination
     name: "Mesh send"
+    state_topic: null        # not to the MQTT broker

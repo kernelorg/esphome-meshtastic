@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v4
 
 - Meshtastic TCP API: `client_api.tcp_port` (default 4403, 0 = off) serves the stream protocol
   for the Home Assistant Meshtastic integration, `meshtastic --host` and apps; up to 3 clients.
@@ -12,7 +12,11 @@
   to clients in the node list.
 - MQTT gateway announces NodeInfo and position once the broker is connected, so the node appears
   on MQTT maps without waiting for the next broadcast.
-- Example `meshtastic-api.yaml`: Ethernet-only node with the client API and Home Assistant entities.
+- Own position sent to clients carries time and precision_bits.
+- Example `meshtastic-api.yaml`: Ethernet-only node with HTTP + TCP client API, telemetry,
+  MQTT gateway on a public broker (no discovery/status/IP, `state_topic: null` on all entities)
+  and Home Assistant entities.
+- README: install source tag v4, client APIs, MQTT gateway on public brokers.
 
 ## v3
 

@@ -6,9 +6,12 @@ A powerful ESPHome component that enables integration of [Meshtastic](https://me
 
 
 > Fork of [Andrik45719/esphome-meshtastic](https://github.com/Andrik45719/esphome-meshtastic)
-> with Ethernet-only builds, packet relaying, per-channel position precision, learned node keys
-> and an MQTT gateway. Changes per release: [CHANGELOG.md](CHANGELOG.md),
+> with Ethernet-only builds, packet relaying, per-channel position precision, learned node keys,
+> an MQTT gateway, the Meshtastic client APIs (HTTP and TCP port 4403: web client, Home Assistant
+> Meshtastic integration, CLI, apps), device telemetry and Home Assistant entities.
+> Changes per release: [CHANGELOG.md](CHANGELOG.md),
 > [Releases](https://github.com/kernelorg/esphome-meshtastic/releases).
+> Complete example: [meshtastic-api.yaml](meshtastic-api.yaml).
 
 [![asciicast](https://asciinema.org/a/1041922.svg)](https://asciinema.org/a/1041922)
 
@@ -70,7 +73,7 @@ Add to your ESPHome configuration:
 
 ```yaml
 external_components:
-  - source: github://kernelorg/esphome-meshtastic@v3   # pin a release tag
+  - source: github://kernelorg/esphome-meshtastic@v4   # pin a release tag
     components: [meshtastic]
     refresh: 24h
 ```
@@ -285,9 +288,14 @@ Uplink publishes packets heard on LoRa whose sender set `ok_to_mqtt`, and our ow
 Downlink transmits packets of that channel received from other gateways; it requires
 `ignore_mqtt: false`.
 
-On a public broker give every entity `state_topic: null`, otherwise ESPHome publishes their states
-(for example the `last_message` text sensor) there; they stay available to Home Assistant over the
-native API.
+Once the broker is connected the node sends its NodeInfo and position, so it appears on MQTT
+maps right away.
+
+On a public broker only Meshtastic packets should be published. Give every entity, internal
+ones included, `state_topic: null`, otherwise ESPHome publishes their states (for example the
+`last_message` text sensor) and subscribes to their command topics there; they stay available to
+Home Assistant over the native API. `discover_ip: false` keeps the node's IP off the broker; set
+`use_address` (or a DHCP reservation) so the ESPHome dashboard does not look for the IP via MQTT.
 
 ```yaml
 mqtt:
@@ -295,11 +303,18 @@ mqtt:
   username: !secret mqtt_user
   password: !secret mqtt_password
   discovery: false
+  discover_ip: false
   log_topic: null
   reboot_timeout: 0s       # do not reboot the node when the broker is unreachable
   birth_message: null      # nothing but Meshtastic packets on a public broker
   will_message: null
   shutdown_message: null
+
+text_sensor:
+  - platform: meshtastic
+    type: last_message
+    name: "Mesh last message"
+    state_topic: null
 
 meshtastic:
   - id: mesh_node
@@ -314,12 +329,17 @@ meshtastic:
 
 ### Meshtastic Client API
 
-Complete example: [meshtastic-api.yaml](meshtastic-api.yaml) (Ethernet-only ESP32-PoE2 + SX1262, client API, Home Assistant entities).
+Complete example: [meshtastic-api.yaml](meshtastic-api.yaml) (Ethernet-only ESP32-PoE2 + SX1262,
+HTTP and TCP client API, telemetry, MQTT gateway, Home Assistant entities).
 
-Implements the HTTP transport of the Meshtastic clients (`PUT /api/v1/toradio`,
-`GET /api/v1/fromradio`), so the Meshtastic web client can connect to the node, show nodes and
-channels, and send/receive messages. It runs its own HTTP server (the ESPHome `web_server` has
-no `PUT`); choose another port if `web_server` uses 80.
+Implements the two network transports of the Meshtastic clients:
+
+- HTTP (`port`, default 80): `PUT /api/v1/toradio`, `GET /api/v1/fromradio`, used by the
+  Meshtastic web client. It runs its own HTTP server (the ESPHome `web_server` has no `PUT`);
+  choose another port if `web_server` uses 80.
+- TCP (`tcp_port`, default 4403): the stream protocol, see below.
+
+Clients connect by IP, so give the node a fixed address (DHCP reservation).
 
 ```yaml
 meshtastic:
@@ -356,6 +376,10 @@ DeviceMetrics heard from other nodes are kept and included in the node list for 
 (Home Assistant Meshtastic integration sensors).
 
 ### Home Assistant Entities
+
+Home Assistant can use the node in two ways, also both at once: through these ESPHome entities
+(native API), or through the Meshtastic integration (HACS) over `client_api.tcp_port`, which adds
+a device per mesh node with telemetry sensors, message triggers and notify entities.
 
 ```yaml
 meshtastic:
