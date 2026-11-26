@@ -337,6 +337,7 @@ class Meshtastic : public Component
   float air_util_tx_();
   meshtastic_DeviceMetrics own_device_metrics_();
   void send_telemetry_(bool mesh);
+  void send_telemetry_response_(NodeNum to, uint8_t channel, PacketId request_id);
   void store_telemetry_(NodeNum from, const meshtastic_Telemetry &t);
  private:
   void schedule_relay_(const std::vector<uint8_t> &packet, const meshtastic_MeshPacket &mp, float snr);

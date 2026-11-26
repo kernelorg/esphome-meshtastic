@@ -1091,7 +1091,11 @@ void Meshtastic::handle_received_packet(meshtastic_MeshPacket &mp) {
       meshtastic_Telemetry telemetry_msg = {};
       if (pb_decode_from_bytes(decodedtmp.payload.bytes, decodedtmp.payload.size, &meshtastic_Telemetry_msg, &telemetry_msg)) {
         ESP_LOGI(TAG, "Telemetry: varinat %d\n", telemetry_msg.which_variant);
-        this->store_telemetry_(mp.from, telemetry_msg);
+        if (!decodedtmp.want_response)  // a request carries empty metrics
+          this->store_telemetry_(mp.from, telemetry_msg);
+        if (decodedtmp.want_response && mp.to == this->node_num_ &&
+            (telemetry_msg.which_variant == meshtastic_Telemetry_device_metrics_tag || telemetry_msg.which_variant == 0))
+          this->send_telemetry_response_(mp.from, mp.channel, mp.id);
         if(telemetry_msg.which_variant == meshtastic_Telemetry_environment_metrics_tag) {
           ESP_LOGI(TAG, "Telemetry Env: temperature=%f humidity=%f pressure=%f\n",
             telemetry_msg.variant.environment_metrics.temperature,

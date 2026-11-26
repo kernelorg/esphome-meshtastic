@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Telemetry requests from the mesh ("request telemetry" in the apps) are answered with the node's
+  DeviceMetrics, PKI-encrypted when the request was; requests are no longer stored as the
+  requester's metrics.
 - The last position heard from other nodes is kept and sent to clients in the node list, so
   they appear on the apps' maps after reconnecting.
 

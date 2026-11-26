@@ -120,6 +120,29 @@ void Meshtastic::send_telemetry_(bool mesh) {
   this->client_push_packet_(mp, mp.decoded, false);  // live only, not kept in the history
 }
 
+// Answer a DeviceMetrics request ("request telemetry" in the apps); a PKI request (channel 0)
+// is answered PKI-encrypted, otherwise on the channel it came on.
+void Meshtastic::send_telemetry_response_(NodeNum to, uint8_t channel, PacketId request_id) {
+  meshtastic_Telemetry t = meshtastic_Telemetry_init_zero;
+  t.time = (uint32_t) ::time(nullptr);
+  t.which_variant = meshtastic_Telemetry_device_metrics_tag;
+  t.variant.device_metrics = this->own_device_metrics_();
+  meshtastic_MeshPacket mp;
+  memset(&mp, 0, sizeof(mp));
+  mp.from = this->node_num_;
+  mp.to = to;
+  mp.id = generatePacketId();
+  mp.channel = channel;
+  mp.priority = meshtastic_MeshPacket_Priority_RELIABLE;
+  mp.hop_limit = this->hop_limit_;
+  mp.decoded.portnum = meshtastic_PortNum_TELEMETRY_APP;
+  mp.decoded.request_id = request_id;
+  mp.decoded.payload.size =
+      pb_encode_to_bytes(mp.decoded.payload.bytes, sizeof(mp.decoded.payload.bytes), &meshtastic_Telemetry_msg, &t);
+  ESP_LOGI(TAG, "Telemetry request from 0x%08" PRIx32 ", answering", to);
+  this->transmit_packet_encrypt(mp);
+}
+
 void Meshtastic::store_telemetry_(NodeNum from, const meshtastic_Telemetry &t) {
   if (t.which_variant != meshtastic_Telemetry_device_metrics_tag || from == this->node_num_)
     return;
