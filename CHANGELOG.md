@@ -12,6 +12,9 @@
 - Heartbeats from clients are answered with `queueStatus`, and every packet a client sends is
   confirmed with `queueStatus` (`mesh_packet_id`), as Meshtastic does; heartbeat nonce 1 triggers
   a NodeInfo broadcast. Without the reply the Android app dropped the connection every ~20 s.
+- Fix: packets a client addresses to the node itself are no longer transmitted over LoRa. NodeInfo,
+  position and telemetry requests are answered locally, other requests get `NO_RESPONSE` (as
+  Meshtastic does without the module), `want_ack` gets an ACK.
 - `want_config` answer in Meshtastic PhoneAPI order (my_info, own NodeInfo, metadata, channels,
   config, module config, other NodeInfos); nonce 69420 now includes the own NodeInfo and 69421
   sends only NodeInfos (no my_info), as the two-stage handshake of the Android app expects.

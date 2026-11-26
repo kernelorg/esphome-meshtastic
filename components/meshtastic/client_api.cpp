@@ -311,8 +311,12 @@ void Meshtastic::client_handle_toradio_(const std::vector<uint8_t> &buf, ClientS
       meshtastic_MeshPacket &p = tr->packet;
       if (p.which_payload_variant != meshtastic_MeshPacket_decoded_tag)
         break;
-      if (p.decoded.portnum == meshtastic_PortNum_ADMIN_APP && (p.to == this->node_num_ || p.to == 0)) {
-        this->client_handle_admin_(p, session);
+      if (p.to == this->node_num_ || p.to == 0) {
+        // Addressed to this node: answer here, never transmit it
+        if (p.decoded.portnum == meshtastic_PortNum_ADMIN_APP)
+          this->client_handle_admin_(p, session);
+        else
+          this->client_handle_local_(p, session);
         break;
       }
       size_t idx = p.channel < this->channels_.size() ? p.channel : 0;
@@ -430,6 +434,69 @@ void Meshtastic::fill_module_config_(pb_size_t tag, meshtastic_ModuleConfig &mc)
     strncpy(mc.payload_variant.mqtt.root, this->mqtt_root_topic_.c_str(), sizeof(mc.payload_variant.mqtt.root) - 1);
     mc.payload_variant.mqtt.encryption_enabled = true;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Packets a client addresses to this node (not admin): reply locally like Meshtastic modules,
+// NO_RESPONSE for what we do not implement (Store & Forward, range test, ...).
+// ---------------------------------------------------------------------------
+void Meshtastic::client_local_reply_(ClientSession &session, const meshtastic_MeshPacket &req, meshtastic_PortNum port,
+                                     const pb_msgdesc_t *fields, const void *msg) {
+  auto fr = std::make_unique<meshtastic_FromRadio>();
+  memset(fr.get(), 0, sizeof(meshtastic_FromRadio));
+  fr->which_payload_variant = meshtastic_FromRadio_packet_tag;
+  meshtastic_MeshPacket &out = fr->packet;
+  out.from = this->node_num_;
+  out.to = this->node_num_;
+  out.id = generatePacketId();
+  out.channel = req.channel;
+  out.rx_time = (uint32_t) ::time(nullptr);
+  out.which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+  out.decoded.portnum = port;
+  out.decoded.request_id = req.id;
+  out.decoded.payload.size = pb_encode_to_bytes(out.decoded.payload.bytes, sizeof(out.decoded.payload.bytes), fields, msg);
+  this->client_push_(session.packet_q, *fr, 0);
+}
+
+void Meshtastic::client_handle_local_(const meshtastic_MeshPacket &p, ClientSession &session) {
+  bool answered = false;
+  if (p.decoded.want_response) {
+    switch (p.decoded.portnum) {
+      case meshtastic_PortNum_NODEINFO_APP:
+        this->client_local_reply_(session, p, meshtastic_PortNum_NODEINFO_APP, &meshtastic_User_msg, &this->owner);
+        answered = true;
+        break;
+      case meshtastic_PortNum_POSITION_APP:
+        if (this->owner_position.has_latitude_i) {
+          meshtastic_Position pos = this->owner_position;
+          pos.time = (uint32_t) ::time(nullptr);
+          this->client_local_reply_(session, p, meshtastic_PortNum_POSITION_APP, &meshtastic_Position_msg, &pos);
+          answered = true;
+        }
+        break;
+      case meshtastic_PortNum_TELEMETRY_APP: {
+        meshtastic_Telemetry t = meshtastic_Telemetry_init_zero;
+        t.time = (uint32_t) ::time(nullptr);
+        t.which_variant = meshtastic_Telemetry_device_metrics_tag;
+        t.variant.device_metrics = this->own_device_metrics_();
+        this->client_local_reply_(session, p, meshtastic_PortNum_TELEMETRY_APP, &meshtastic_Telemetry_msg, &t);
+        answered = true;
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  ESP_LOGD(TAG, "Client packet to us, port %d: %s", p.decoded.portnum,
+           answered ? "answered locally" : (p.decoded.want_response ? "NO_RESPONSE" : "ignored"));
+  meshtastic_Routing_Error err = meshtastic_Routing_Error_NONE;
+  if (p.decoded.want_response && !answered)
+    err = meshtastic_Routing_Error_NO_RESPONSE;  // like Meshtastic when no module answers
+  else if (!p.want_ack)
+    return;
+  std::vector<uint8_t> ack;
+  if (this->client_routing_packet_(p.id, err, ack))
+    this->client_queue_(session.packet_q, std::move(ack), 0);
 }
 
 // ---------------------------------------------------------------------------
