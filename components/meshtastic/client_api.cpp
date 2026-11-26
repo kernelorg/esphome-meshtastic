@@ -302,6 +302,7 @@ void Meshtastic::client_handle_toradio_(const std::vector<uint8_t> &buf, ClientS
     }
     case meshtastic_ToRadio_heartbeat_tag:
       // Clients use the reply as keepalive and reconnect when nothing comes back
+      ESP_LOGD(TAG, "Client heartbeat (nonce %" PRIu32 "), answering queueStatus", tr->heartbeat.nonce);
       this->client_push_queue_status_(session, 0);
       if (tr->heartbeat.nonce == 1)  // "nodeinfo ping": peers re-learn our key
         this->send_our_node_info(NODENUM_BROADCAST, 0, meshtastic_MeshPacket_Priority_BACKGROUND);
@@ -536,23 +537,21 @@ void Meshtastic::client_send_config_(uint32_t nonce, ClientSession &session) {
   };
   auto &q = session.config_q;
 
-  // MyNodeInfo
-  reset(meshtastic_FromRadio_my_info_tag);
-  fr->my_info.my_node_num = this->node_num_;
-  fr->my_info.min_app_version = 30200;
-  strncpy(fr->my_info.pio_env, "esphome", sizeof(fr->my_info.pio_env) - 1);
-  fr->my_info.nodedb_count = this->nodes_.size();
-  this->client_push_(q, *fr, 0);
-
+  // Same order as Meshtastic PhoneAPI: my_info, own NodeInfo, metadata, channels, config, module
+  // config, other NodeInfos, complete. 69420 (only config) skips other nodes, 69421 (only nodes)
+  // sends just the NodeInfos.
   if (nonce != NONCE_ONLY_NODES) {
-    // DeviceMetadata
-    reset(meshtastic_FromRadio_metadata_tag);
-    this->fill_metadata_(fr->metadata);
+    // MyNodeInfo
+    reset(meshtastic_FromRadio_my_info_tag);
+    fr->my_info.my_node_num = this->node_num_;
+    fr->my_info.min_app_version = 30200;
+    strncpy(fr->my_info.pio_env, "esphome", sizeof(fr->my_info.pio_env) - 1);
+    fr->my_info.nodedb_count = this->nodes_.size();
     this->client_push_(q, *fr, 0);
   }
 
-  // NodeInfo: own node first
-  if (nonce != NONCE_ONLY_CONFIG) {
+  // Own NodeInfo
+  {
     reset(meshtastic_FromRadio_node_info_tag);
     fr->node_info.num = this->node_num_;
     fr->node_info.has_user = true;
@@ -568,33 +567,13 @@ void Meshtastic::client_send_config_(uint32_t nonce, ClientSession &session) {
     fr->node_info.has_device_metrics = true;
     fr->node_info.device_metrics = this->own_device_metrics_();
     this->client_push_(q, *fr, 0);
-    for (auto &n : this->nodes_) {
-      if (n->node_num_ == 0 || n->node_num_ == this->node_num_)
-        continue;
-      reset(meshtastic_FromRadio_node_info_tag);
-      auto &ni = fr->node_info;
-      ni.num = n->node_num_;
-      ni.has_user = true;
-      snprintf(ni.user.id, sizeof(ni.user.id), "!%08" PRIx32, n->node_num_);
-      strncpy(ni.user.long_name, n->name_.c_str(), sizeof(ni.user.long_name) - 1);
-      strncpy(ni.user.short_name, n->name_short_.c_str(), sizeof(ni.user.short_name) - 1);
-      ni.user.hw_model = n->hw_model_;
-      ni.user.role = n->role_;
-      if (n->public_key_.size() == 32) {
-        memcpy(ni.user.public_key.bytes, n->public_key_.data(), 32);
-        ni.user.public_key.size = 32;
-      }
-      ni.snr = n->snr_;
-      ni.last_heard = n->last_heard_;
-      ni.has_hops_away = n->last_heard_ != 0;
-      ni.hops_away = n->hops_away_;
-      ni.has_device_metrics = n->has_device_metrics_;
-      ni.device_metrics = n->device_metrics_;
-      this->client_push_(q, *fr, 0);
-    }
   }
 
   if (nonce != NONCE_ONLY_NODES) {
+    // DeviceMetadata
+    reset(meshtastic_FromRadio_metadata_tag);
+    this->fill_metadata_(fr->metadata);
+    this->client_push_(q, *fr, 0);
     // Channels (always 8)
     for (int i = 0; i < 8; i++) {
       reset(meshtastic_FromRadio_channel_tag);
@@ -627,9 +606,6 @@ void Meshtastic::client_send_config_(uint32_t nonce, ClientSession &session) {
       this->fill_module_config_(tag, fr->moduleConfig);
       this->client_push_(q, *fr, 0);
     }
-  }
-
-  if (nonce != NONCE_ONLY_NODES) {
     // Module configs newer than our generated protobufs (statusmessage 14, traffic_management 15,
     // tak 16): send them empty (= defaults), hand-encoded, so clients stop waiting.
     for (uint32_t field : {14u, 15u, 16u}) {
@@ -655,6 +631,34 @@ void Meshtastic::client_send_config_(uint32_t nonce, ClientSession &session) {
       buf.insert(buf.end(), inner, inner + n);
       LockGuard lock(this->client_mutex_);
       q.push_back(std::move(buf));
+    }
+  }
+
+  // Other NodeInfos
+  if (nonce != NONCE_ONLY_CONFIG) {
+    for (auto &n : this->nodes_) {
+      if (n->node_num_ == 0 || n->node_num_ == this->node_num_)
+        continue;
+      reset(meshtastic_FromRadio_node_info_tag);
+      auto &ni = fr->node_info;
+      ni.num = n->node_num_;
+      ni.has_user = true;
+      snprintf(ni.user.id, sizeof(ni.user.id), "!%08" PRIx32, n->node_num_);
+      strncpy(ni.user.long_name, n->name_.c_str(), sizeof(ni.user.long_name) - 1);
+      strncpy(ni.user.short_name, n->name_short_.c_str(), sizeof(ni.user.short_name) - 1);
+      ni.user.hw_model = n->hw_model_;
+      ni.user.role = n->role_;
+      if (n->public_key_.size() == 32) {
+        memcpy(ni.user.public_key.bytes, n->public_key_.data(), 32);
+        ni.user.public_key.size = 32;
+      }
+      ni.snr = n->snr_;
+      ni.last_heard = n->last_heard_;
+      ni.has_hops_away = n->last_heard_ != 0;
+      ni.hops_away = n->hops_away_;
+      ni.has_device_metrics = n->has_device_metrics_;
+      ni.device_metrics = n->device_metrics_;
+      this->client_push_(q, *fr, 0);
     }
   }
 
@@ -786,6 +790,7 @@ void Meshtastic::tcp_api_loop_() {
     auto c = std::make_unique<TcpClient>();
     c->fd = fd;
     c->session.last_seen = millis();
+    c->connected_at = millis();
     ESP_LOGI(TAG, "TCP API: client %s connected", inet_ntoa(peer.sin_addr));
     this->tcp_clients_.push_back(std::move(c));
   }
@@ -819,7 +824,12 @@ void Meshtastic::tcp_client_service_(TcpClient &c) {
       continue;
     }
     if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
-      ESP_LOGI(TAG, "TCP API: client disconnected");
+      if (n == 0)
+        ESP_LOGI(TAG, "TCP API: client closed the connection (after %" PRIu32 " s)",
+                 (millis() - c.connected_at) / 1000);
+      else
+        ESP_LOGI(TAG, "TCP API: read error %d, closing (after %" PRIu32 " s)", errno,
+                 (millis() - c.connected_at) / 1000);
       lwip_close(c.fd);
       c.fd = -1;
       return;
@@ -870,7 +880,7 @@ void Meshtastic::tcp_client_service_(TcpClient &c) {
     }
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
       break;
-    ESP_LOGI(TAG, "TCP API: write failed, closing");
+    ESP_LOGI(TAG, "TCP API: write failed (errno %d), closing", errno);
     lwip_close(c.fd);
     c.fd = -1;
     return;

@@ -258,6 +258,7 @@ class Meshtastic : public Component
   // TCP API (Meshtastic stream protocol, port 4403), served from loop()
   struct TcpClient {
     int fd = -1;
+    uint32_t connected_at = 0;
     ClientSession session;
     std::vector<uint8_t> rx;
     std::vector<uint8_t> tx;

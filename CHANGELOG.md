@@ -12,6 +12,10 @@
 - Heartbeats from clients are answered with `queueStatus`, and every packet a client sends is
   confirmed with `queueStatus` (`mesh_packet_id`), as Meshtastic does; heartbeat nonce 1 triggers
   a NodeInfo broadcast. Without the reply the Android app dropped the connection every ~20 s.
+- `want_config` answer in Meshtastic PhoneAPI order (my_info, own NodeInfo, metadata, channels,
+  config, module config, other NodeInfos); nonce 69420 now includes the own NodeInfo and 69421
+  sends only NodeInfos (no my_info), as the two-stage handshake of the Android app expects.
+- Log: client heartbeats and why a TCP client was disconnected.
 - TCP API clients silent for 15 minutes are closed, so vanished clients do not hold the 3 slots.
 - Fix: the component declares its own sockets (TCP API, HTTP API, UDP bridge) to ESPHome, which
   sizes the lwIP socket limit from them. Before, with `mqtt:` and both client APIs the limit (10)
