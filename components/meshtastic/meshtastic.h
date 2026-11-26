@@ -283,6 +283,7 @@ class Meshtastic : public Component
   void client_push_routing_ack_(PacketId id);
   bool client_routing_packet_(PacketId id, meshtastic_Routing_Error err, std::vector<uint8_t> &out);
   void client_handle_admin_(const meshtastic_MeshPacket &p, ClientSession &session);
+  void client_push_queue_status_(ClientSession &session, PacketId id);
   uint8_t admin_passkey_[8] = {0};
   bool admin_passkey_set_ = false;
   void fill_metadata_(meshtastic_DeviceMetadata &md);

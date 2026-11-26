@@ -9,6 +9,10 @@
   (with a session passkey), `set_time_only` is accepted, requests with `want_ack` get a routing
   ACK; changes (`set_*`, reboot, reset, ...) are refused with `NOT_AUTHORIZED` instead of being
   dropped silently. The Android app kept reconnecting while waiting for these answers.
+- Heartbeats from clients are answered with `queueStatus`, and every packet a client sends is
+  confirmed with `queueStatus` (`mesh_packet_id`), as Meshtastic does; heartbeat nonce 1 triggers
+  a NodeInfo broadcast. Without the reply the Android app dropped the connection every ~20 s.
+- TCP API clients silent for 15 minutes are closed, so vanished clients do not hold the 3 slots.
 - Fix: the component declares its own sockets (TCP API, HTTP API, UDP bridge) to ESPHome, which
   sizes the lwIP socket limit from them. Before, with `mqtt:` and both client APIs the limit (10)
   was exhausted and lwIP reset new connections on port 4403 (apps kept reconnecting). A failed

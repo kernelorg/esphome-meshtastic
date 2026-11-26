@@ -232,6 +232,18 @@ void Meshtastic::client_push_routing_ack_(PacketId id) {
   this->client_broadcast_(*fr);
 }
 
+// QueueStatus: answer to heartbeats and acknowledgement that a client packet was queued
+void Meshtastic::client_push_queue_status_(ClientSession &session, PacketId id) {
+  auto fr = std::make_unique<meshtastic_FromRadio>();
+  memset(fr.get(), 0, sizeof(meshtastic_FromRadio));
+  fr->which_payload_variant = meshtastic_FromRadio_queueStatus_tag;
+  fr->queueStatus.res = 0;
+  fr->queueStatus.free = 16;  // we transmit immediately, the queue is never full
+  fr->queueStatus.maxlen = 16;
+  fr->queueStatus.mesh_packet_id = id;
+  this->client_push_(session.packet_q, *fr, 0);
+}
+
 void Meshtastic::client_api_put_(const uint8_t *data, size_t len) {
   LockGuard lock(this->client_mutex_);
   if (this->client_toradio_q_.size() >= CLIENT_TORADIO_QUEUE_MAX)
@@ -289,6 +301,10 @@ void Meshtastic::client_handle_toradio_(const std::vector<uint8_t> &buf, ClientS
       break;
     }
     case meshtastic_ToRadio_heartbeat_tag:
+      // Clients use the reply as keepalive and reconnect when nothing comes back
+      this->client_push_queue_status_(session, 0);
+      if (tr->heartbeat.nonce == 1)  // "nodeinfo ping": peers re-learn our key
+        this->send_our_node_info(NODENUM_BROADCAST, 0, meshtastic_MeshPacket_Priority_BACKGROUND);
       break;
     case meshtastic_ToRadio_packet_tag: {
       meshtastic_MeshPacket &p = tr->packet;
@@ -323,7 +339,9 @@ void Meshtastic::client_handle_toradio_(const std::vector<uint8_t> &buf, ClientS
         this->client_pending_acks_.insert(mp.id);
       if (this->client_pending_acks_.size() > 32)
         this->client_pending_acks_.erase(this->client_pending_acks_.begin());
-      this->transmit_packet_encrypt(mp, mp.decoded.want_response);
+      bool sent = this->transmit_packet_encrypt(mp, mp.decoded.want_response);
+      if (sent)
+        this->client_push_queue_status_(session, mp.id);  // "accepted for sending", as Meshtastic does
       break;
     }
     default:
@@ -708,6 +726,7 @@ static constexpr uint8_t STREAM_START2 = 0xC3;
 static constexpr size_t STREAM_MAX_PAYLOAD = 512;
 static constexpr size_t TCP_MAX_CLIENTS = 3;
 static constexpr size_t TCP_TX_MAX = 8192;  // drop the client if it does not read
+static constexpr uint32_t TCP_IDLE_MS = 15 * 60 * 1000;  // clients send heartbeats far more often
 #endif
 
 void Meshtastic::tcp_api_setup_() {
@@ -784,6 +803,12 @@ void Meshtastic::tcp_api_loop_() {
 
 void Meshtastic::tcp_client_service_(TcpClient &c) {
 #ifdef MESHTASTIC_TCP_API
+  if (millis() - c.session.last_seen > TCP_IDLE_MS) {
+    ESP_LOGI(TAG, "TCP API: client idle for 15 min, closing");
+    lwip_close(c.fd);
+    c.fd = -1;
+    return;
+  }
   // read
   uint8_t buf[256];
   for (;;) {
