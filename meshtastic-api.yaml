@@ -148,6 +148,7 @@ meshtastic:
     client_api:
       port: 80               # HTTP API (web client), 0 = off
       tcp_port: 4403         # TCP API (HA integration, CLI, apps), 0 = off
+      history: 1000          # packets kept for clients that were offline (PSRAM), 0 = off
       region: EU_868         # reported to clients only
       modem_preset: SHORT_FAST
     telemetry_interval: 30min  # own DeviceMetrics to the mesh; clients get them every minute

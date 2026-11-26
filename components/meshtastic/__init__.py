@@ -63,6 +63,7 @@ CONF_ON_TEXT_MESSAGE = "on_text_message"
 CONF_CLIENT_API = "client_api"
 CONF_PORT = "port"
 CONF_TCP_PORT = "tcp_port"
+CONF_HISTORY = "history"
 CONF_TELEMETRY_INTERVAL = "telemetry_interval"
 CONF_REGION = "region"
 CONF_MODEM_PRESET = "modem_preset"
@@ -91,6 +92,8 @@ CLIENT_API_SCHEMA = cv.Schema(
         cv.Optional(CONF_PORT, default=80): cv.int_range(0, 65535),
         # TCP stream API (HA Meshtastic integration, python CLI --host, apps); 0 disables
         cv.Optional(CONF_TCP_PORT, default=4403): cv.int_range(0, 65535),
+        # Packets kept for clients that were not connected (512 bytes each, in PSRAM); 0 = off
+        cv.Optional(CONF_HISTORY, default=1000): cv.int_range(0, 4000),
         cv.Optional(CONF_REGION, default="EU_868"): cv.enum(REGIONS, upper=True),
         cv.Optional(CONF_MODEM_PRESET, default="LONG_FAST"): cv.enum(MODEM_PRESETS, upper=True),
     }
@@ -319,6 +322,7 @@ async def to_code(configs):
                     pass
             if api[CONF_TCP_PORT]:
                 cg.add_define("MESHTASTIC_TCP_API")
+            cg.add(var.set_client_history(api[CONF_HISTORY]))
             cg.add(
                 var.set_client_api(
                     api[CONF_PORT],

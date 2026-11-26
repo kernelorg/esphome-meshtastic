@@ -26,6 +26,7 @@
 #include "esphome/core/preferences.h"
 #include "esphome/core/helpers.h"
 #include <deque>
+#include <map>
 #include <set>
 #ifdef USE_TEXT_SENSOR
 #include "esphome/components/text_sensor/text_sensor.h"
@@ -250,9 +251,25 @@ class Meshtastic : public Component
   // One session per connected client: its own config answer and packet queue
   struct ClientSession {
     std::deque<std::vector<uint8_t>> config_q;  // FromRadio, answer to want_config
-    std::deque<std::vector<uint8_t>> packet_q;  // FromRadio packets
+    std::deque<std::vector<uint8_t>> packet_q;  // FromRadio for this client only (ACKs, replies)
     uint32_t last_seen = 0;
+    uint32_t peer = 0;          // client key (IPv4) for the delivered-packets bookmark
+    bool hist_active = false;   // reading the packet history (after want_config)
+    uint32_t hist_next = 0;     // next history sequence number to deliver
   };
+  // Packet history in PSRAM: every packet received from the mesh, delivered once to each client
+  // (by IP), also when it was not connected at the time - like the Meshtastic to-phone queue.
+  static constexpr size_t HIST_SLOT = 512;  // 2-byte length + encoded FromRadio (max 510)
+  uint16_t history_size_ = 1000;
+  uint8_t *hist_buf_ = nullptr;
+  uint32_t hist_cap_ = 0;
+  uint32_t hist_seq_ = 0;  // sequence number of the next packet to store
+  std::map<uint32_t, uint32_t> hist_delivered_;  // client key -> next sequence it has not received
+  void client_history_init_();
+  void client_history_store_(const std::vector<uint8_t> &buf);
+  bool client_history_next_locked_(ClientSession &s, std::vector<uint8_t> &out);
+  void client_history_start_(ClientSession &s);
+  bool client_next_locked_(ClientSession &s, std::vector<uint8_t> &out);
   ClientSession http_session_;                         // HTTP API (guarded by client_mutex_)
   std::deque<std::vector<uint8_t>> client_toradio_q_;  // ToRadio from HTTP, handled in loop()
   // TCP API (Meshtastic stream protocol, port 4403), served from loop()
@@ -280,7 +297,7 @@ class Meshtastic : public Component
   void client_push_(std::deque<std::vector<uint8_t>> &q, meshtastic_FromRadio &fr, size_t max);
   void client_broadcast_(meshtastic_FromRadio &fr);
   bool client_any_active_();
-  void client_push_packet_(const meshtastic_MeshPacket &mp, const meshtastic_Data &decoded);
+  void client_push_packet_(const meshtastic_MeshPacket &mp, const meshtastic_Data &decoded, bool store = true);
   void client_push_routing_ack_(PacketId id);
   bool client_routing_packet_(PacketId id, meshtastic_Routing_Error err, std::vector<uint8_t> &out);
   void client_handle_admin_(const meshtastic_MeshPacket &p, ClientSession &session);
@@ -375,6 +392,7 @@ class Meshtastic : public Component
     this->lora_preamble_ = preamble;
   };
   void set_telemetry_interval(uint32_t ms) { this->telemetry_interval_ms_ = ms; };
+  void set_client_history(uint16_t n) { this->history_size_ = n; };
   void set_client_api(uint16_t port, uint16_t tcp_port, uint8_t region, uint8_t preset) {
     this->client_api_port_ = port;
     this->tcp_api_port_ = tcp_port;

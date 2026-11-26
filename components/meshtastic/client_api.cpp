@@ -13,6 +13,9 @@
 #ifdef MESHTASTIC_CLIENT_API
 #include <esp_http_server.h>
 #endif
+#ifdef USE_ESP32
+#include <esp_heap_caps.h>
+#endif
 #ifdef MESHTASTIC_TCP_API
 #include <lwip/sockets.h>
 #include <lwip/inet.h>
@@ -165,8 +168,11 @@ void Meshtastic::client_broadcast_(meshtastic_FromRadio &fr) {
     this->client_queue_(this->http_session_.packet_q, std::move(buf), CLIENT_PACKET_QUEUE_MAX);
 }
 
-void Meshtastic::client_push_packet_(const meshtastic_MeshPacket &mp, const meshtastic_Data &decoded) {
-  if (!this->client_any_active_())
+void Meshtastic::client_push_packet_(const meshtastic_MeshPacket &mp, const meshtastic_Data &decoded, bool store) {
+  if (this->client_api_port_ == 0 && this->tcp_api_port_ == 0)
+    return;
+  store = store && this->hist_buf_ != nullptr;
+  if (!store && !this->client_any_active_())
     return;
   auto fr = std::make_unique<meshtastic_FromRadio>();
   memset(fr.get(), 0, sizeof(meshtastic_FromRadio));
@@ -190,7 +196,94 @@ void Meshtastic::client_push_packet_(const meshtastic_MeshPacket &mp, const mesh
       p.public_key.size = 32;
     }
   }
-  this->client_broadcast_(*fr);
+  if (!store) {
+    this->client_broadcast_(*fr);
+    return;
+  }
+  std::vector<uint8_t> buf;
+  if (this->client_encode_(*fr, buf))
+    this->client_history_store_(buf);  // clients read it from the history (live and later)
+}
+
+// ---------------------------------------------------------------------------
+// Packet history
+// ---------------------------------------------------------------------------
+void Meshtastic::client_history_init_() {
+  if (this->history_size_ == 0 || this->hist_buf_ != nullptr)
+    return;
+  size_t want = (size_t) this->history_size_ * HIST_SLOT;
+#ifdef USE_ESP32
+  this->hist_buf_ = (uint8_t *) heap_caps_malloc(want, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#endif
+  if (this->hist_buf_ != nullptr) {
+    this->hist_cap_ = this->history_size_;
+  } else {
+    // no PSRAM: a small history in internal RAM
+    this->hist_cap_ = std::min<uint32_t>(this->history_size_, 32);
+    this->hist_buf_ = (uint8_t *) malloc(this->hist_cap_ * HIST_SLOT);
+    if (this->hist_buf_ == nullptr)
+      this->hist_cap_ = 0;
+  }
+  ESP_LOGI(TAG, "Packet history for clients: %" PRIu32 " packets%s", this->hist_cap_,
+           this->hist_cap_ == this->history_size_ ? " (PSRAM)" : " (internal RAM, no PSRAM)");
+}
+
+void Meshtastic::client_history_store_(const std::vector<uint8_t> &buf) {
+  if (buf.size() > HIST_SLOT - 2)
+    return;
+  LockGuard lock(this->client_mutex_);
+  uint8_t *slot = this->hist_buf_ + (this->hist_seq_ % this->hist_cap_) * HIST_SLOT;
+  slot[0] = buf.size() >> 8;
+  slot[1] = buf.size() & 0xFF;
+  memcpy(slot + 2, buf.data(), buf.size());
+  this->hist_seq_++;
+}
+
+// Start (or resume) delivering the history to a client after its config
+void Meshtastic::client_history_start_(ClientSession &s) {
+  if (this->hist_buf_ == nullptr)
+    return;
+  LockGuard lock(this->client_mutex_);
+  uint32_t oldest = this->hist_seq_ > this->hist_cap_ ? this->hist_seq_ - this->hist_cap_ : 0;
+  auto it = this->hist_delivered_.find(s.peer);
+  uint32_t next = it != this->hist_delivered_.end() ? it->second : oldest;  // new client: everything
+  s.hist_next = std::max(next, oldest);
+  s.hist_active = true;
+  ESP_LOGI(TAG, "Client history: %" PRIu32 " packet(s) to deliver", this->hist_seq_ - s.hist_next);
+}
+
+bool Meshtastic::client_history_next_locked_(ClientSession &s, std::vector<uint8_t> &out) {
+  if (!s.hist_active || this->hist_buf_ == nullptr)
+    return false;
+  uint32_t oldest = this->hist_seq_ > this->hist_cap_ ? this->hist_seq_ - this->hist_cap_ : 0;
+  if (s.hist_next < oldest)
+    s.hist_next = oldest;  // fell behind: the oldest were overwritten
+  if (s.hist_next >= this->hist_seq_)
+    return false;
+  const uint8_t *slot = this->hist_buf_ + (s.hist_next % this->hist_cap_) * HIST_SLOT;
+  size_t len = (slot[0] << 8) | slot[1];
+  out.assign(slot + 2, slot + 2 + len);
+  s.hist_next++;
+  if (this->hist_delivered_.size() < 16 || this->hist_delivered_.count(s.peer))
+    this->hist_delivered_[s.peer] = s.hist_next;
+  return true;
+}
+
+// Next message for a client: config answer, then history (live packets too), then own replies
+bool Meshtastic::client_next_locked_(ClientSession &s, std::vector<uint8_t> &out) {
+  if (!s.config_q.empty()) {
+    out = std::move(s.config_q.front());
+    s.config_q.pop_front();
+    return true;
+  }
+  if (this->client_history_next_locked_(s, out))
+    return true;
+  if (!s.packet_q.empty()) {
+    out = std::move(s.packet_q.front());
+    s.packet_q.pop_front();
+    return true;
+  }
+  return false;
 }
 
 // Routing ACK/NAK for a packet a client sent (id = request id, see client_push_packet_())
@@ -254,12 +347,7 @@ void Meshtastic::client_api_put_(const uint8_t *data, size_t len) {
 bool Meshtastic::client_api_get_(std::vector<uint8_t> &out) {
   LockGuard lock(this->client_mutex_);
   this->http_session_.last_seen = millis();
-  auto &q = !this->http_session_.config_q.empty() ? this->http_session_.config_q : this->http_session_.packet_q;
-  if (q.empty())
-    return false;
-  out = std::move(q.front());
-  q.pop_front();
-  return true;
+  return this->client_next_locked_(this->http_session_, out);
 }
 
 // ---------------------------------------------------------------------------
@@ -732,6 +820,9 @@ void Meshtastic::client_send_config_(uint32_t nonce, ClientSession &session) {
   reset(meshtastic_FromRadio_config_complete_id_tag);
   fr->config_complete_id = nonce;
   this->client_push_(q, *fr, 0);
+  // Then the packets this client has not received yet (Meshtastic replays after the config too)
+  if (nonce != NONCE_ONLY_CONFIG)
+    this->client_history_start_(session);
   ESP_LOGI(TAG, "Config for client queued (%u messages)", (unsigned) q.size());
 }
 
@@ -858,6 +949,7 @@ void Meshtastic::tcp_api_loop_() {
     c->fd = fd;
     c->session.last_seen = millis();
     c->connected_at = millis();
+    c->session.peer = peer.sin_addr.s_addr;
     ESP_LOGI(TAG, "TCP API: client %s connected", inet_ntoa(peer.sin_addr));
     this->tcp_clients_.push_back(std::move(c));
   }
@@ -927,15 +1019,13 @@ void Meshtastic::tcp_client_service_(TcpClient &c) {
   // frame queued FromRadio messages
   {
     LockGuard lock(this->client_mutex_);
-    while (c.tx.size() < TCP_TX_MAX && (!c.session.config_q.empty() || !c.session.packet_q.empty())) {
-      auto &q = !c.session.config_q.empty() ? c.session.config_q : c.session.packet_q;
-      const auto &m = q.front();
+    std::vector<uint8_t> m;
+    while (c.tx.size() < TCP_TX_MAX && this->client_next_locked_(c.session, m)) {
       c.tx.push_back(STREAM_START1);
       c.tx.push_back(STREAM_START2);
       c.tx.push_back(m.size() >> 8);
       c.tx.push_back(m.size() & 0xFF);
       c.tx.insert(c.tx.end(), m.begin(), m.end());
-      q.pop_front();
     }
   }
   // write
@@ -956,6 +1046,8 @@ void Meshtastic::tcp_client_service_(TcpClient &c) {
 }
 
 void Meshtastic::client_api_setup_() {
+  if (this->client_api_port_ != 0 || this->tcp_api_port_ != 0)
+    this->client_history_init_();
   this->tcp_api_setup_();
   if (this->client_api_port_ == 0)
     return;

@@ -117,7 +117,7 @@ void Meshtastic::send_telemetry_(bool mesh) {
   // our own telemetry is shown to clients as a packet from us (Meshtastic sends it to the phone too)
   mp.rx_time = (uint32_t) ::time(nullptr);
   mp.which_payload_variant = meshtastic_MeshPacket_decoded_tag;
-  this->client_push_packet_(mp, mp.decoded);
+  this->client_push_packet_(mp, mp.decoded, false);  // live only, not kept in the history
 }
 
 void Meshtastic::store_telemetry_(NodeNum from, const meshtastic_Telemetry &t) {

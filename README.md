@@ -339,7 +339,12 @@ Implements the two network transports of the Meshtastic clients:
   choose another port if `web_server` uses 80.
 - TCP (`tcp_port`, default 4403): the stream protocol, see below.
 
-Clients connect by IP, so give the node a fixed address (DHCP reservation). The Meshtastic apps also find nodes
+Clients connect by IP, so give the node a fixed address (DHCP reservation).
+
+Every packet received from the mesh is kept in a history (`history` packets of up to 512 bytes,
+in PSRAM) and delivered to each client once, after its config: a client that reconnects (same
+IP) receives what it missed while offline, a new client receives the whole history. The history
+does not survive a reboot. The Meshtastic apps also find nodes
 by mDNS (`_meshtastic._tcp`, TXT `shortname`, `id`, `pio_env`); announce it with the ESPHome
 `mdns:` component as in [meshtastic-api.yaml](meshtastic-api.yaml).
 
@@ -349,6 +354,7 @@ meshtastic:
     client_api:
       port: 80                # HTTP API (web client), 0 = off
       tcp_port: 4403          # TCP API, 0 = off
+      history: 1000           # packets kept for clients that were offline (PSRAM), 0 = off
       region: EU_868          # reported to the client only
       modem_preset: SHORT_FAST
 ```

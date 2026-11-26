@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Packet history for clients: every packet received from the mesh is kept in PSRAM
+  (`client_api.history`, default 1000 packets of up to 512 bytes, max 4000; 32 in internal RAM
+  without PSRAM) and delivered once to each client, identified by IP: a client that reconnects
+  gets what it missed, a new client gets the whole history, after its config (like the
+  Meshtastic to-phone queue). Lost on reboot.
 - Actions are registered with `synchronous=True` on ESPHome 2026.11+ (no more warnings);
   older ESPHome versions keep working.
 - Admin messages to the node from clients: `get_channel`, `get_owner`, `get_config`,
