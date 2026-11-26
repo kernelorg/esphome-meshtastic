@@ -360,8 +360,9 @@ queue, so they do not take packets from each other.
 
 Supported: config download (`want_config`, including nonces 69420/69421), node list, channels,
 text and other packets in both directions, PKI direct messages, ACK when a neighbour relays our
-broadcast. Not supported: changing settings from the client (admin messages are ignored, the
-YAML is the configuration). There is no authentication, as on Meshtastic devices.
+broadcast. Admin requests that read the configuration (`get_*`) are answered;
+changing settings from the client is refused with `NOT_AUTHORIZED` (the YAML is the
+configuration). There is no authentication, as on Meshtastic devices.
 
 The hosted client at `https://client.meshtastic.org` cannot reach a plain `http://` device
 (mixed content). Run the web client locally (`docker run -p 8080:8080 ghcr.io/meshtastic/web`)

@@ -8,6 +8,7 @@
 #include "config.pb.h"
 #include "module_config.pb.h"
 #include "channel.pb.h"
+#include "admin.pb.h"
 
 #ifdef MESHTASTIC_CLIENT_API
 #include <esp_http_server.h>
@@ -192,6 +193,25 @@ void Meshtastic::client_push_packet_(const meshtastic_MeshPacket &mp, const mesh
   this->client_broadcast_(*fr);
 }
 
+// Routing ACK/NAK for a packet a client sent (id = request id, see client_push_packet_())
+bool Meshtastic::client_routing_packet_(PacketId id, meshtastic_Routing_Error err, std::vector<uint8_t> &out) {
+  auto fr = std::make_unique<meshtastic_FromRadio>();
+  memset(fr.get(), 0, sizeof(meshtastic_FromRadio));
+  fr->which_payload_variant = meshtastic_FromRadio_packet_tag;
+  meshtastic_MeshPacket &p = fr->packet;
+  p.from = this->node_num_;
+  p.to = this->node_num_;
+  p.id = id;
+  p.which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+  p.decoded.portnum = meshtastic_PortNum_ROUTING_APP;
+  p.decoded.request_id = id;
+  meshtastic_Routing r = meshtastic_Routing_init_zero;
+  r.which_variant = meshtastic_Routing_error_reason_tag;
+  r.error_reason = err;
+  p.decoded.payload.size = pb_encode_to_bytes(p.decoded.payload.bytes, sizeof(p.decoded.payload.bytes), &meshtastic_Routing_msg, &r);
+  return this->client_encode_(*fr, out);
+}
+
 void Meshtastic::client_push_routing_ack_(PacketId id) {
   if (this->client_pending_acks_.erase(id) == 0)
     return;
@@ -275,7 +295,7 @@ void Meshtastic::client_handle_toradio_(const std::vector<uint8_t> &buf, ClientS
       if (p.which_payload_variant != meshtastic_MeshPacket_decoded_tag)
         break;
       if (p.decoded.portnum == meshtastic_PortNum_ADMIN_APP && (p.to == this->node_num_ || p.to == 0)) {
-        ESP_LOGW(TAG, "Admin messages from the client are not supported, configure the node in YAML");
+        this->client_handle_admin_(p, session);
         break;
       }
       size_t idx = p.channel < this->channels_.size() ? p.channel : 0;
@@ -311,6 +331,180 @@ void Meshtastic::client_handle_toradio_(const std::vector<uint8_t> &buf, ClientS
   }
 }
 
+// ---------------------------------------------------------------------------
+// Device description shared by want_config and admin get_* responses
+// ---------------------------------------------------------------------------
+void Meshtastic::fill_metadata_(meshtastic_DeviceMetadata &md) {
+  memset(&md, 0, sizeof(md));
+  strncpy(md.firmware_version, "2.7.0.esphome", sizeof(md.firmware_version) - 1);
+  md.device_state_version = 24;
+  md.hasEthernet = true;
+#ifdef USE_WIFI
+  md.hasWifi = true;
+#endif
+  md.role = this->owner.role;
+  md.hw_model = this->owner.hw_model;
+  md.hasPKC = true;
+}
+
+void Meshtastic::fill_channel_(int i, meshtastic_Channel &ch) {
+  memset(&ch, 0, sizeof(ch));
+  ch.index = i;
+  // settings is always present, also for disabled slots (clients read its fields unconditionally)
+  ch.has_settings = true;
+  ch.settings.has_module_settings = true;
+  if (i < 0 || i >= (int) this->channels_.size()) {
+    ch.role = meshtastic_Channel_Role_DISABLED;
+    return;
+  }
+  const Channel &c = this->channels_[i];
+  ch.role = i == 0 ? meshtastic_Channel_Role_PRIMARY : meshtastic_Channel_Role_SECONDARY;
+  strncpy(ch.settings.name, c.get_name().c_str(), sizeof(ch.settings.name) - 1);
+  const psk_t &psk = c.get_psk_config();
+  ch.settings.psk.size = std::min(psk.size(), sizeof(ch.settings.psk.bytes));
+  memcpy(ch.settings.psk.bytes, psk.data(), ch.settings.psk.size);
+  ch.settings.uplink_enabled = c.get_uplink();
+  ch.settings.downlink_enabled = c.get_downlink();
+  ch.settings.module_settings.position_precision = c.get_position_precision();
+}
+
+// Config: values that reflect the YAML; everything else stays default
+void Meshtastic::fill_config_(pb_size_t tag, meshtastic_Config &cfg) {
+  memset(&cfg, 0, sizeof(cfg));
+  cfg.which_payload_variant = tag;
+  switch (tag) {
+    case meshtastic_Config_device_tag:
+      cfg.payload_variant.device.role = this->owner.role;
+      cfg.payload_variant.device.node_info_broadcast_secs = this->node_broadcast_interval_ / 1000;
+      break;
+    case meshtastic_Config_position_tag:
+      cfg.payload_variant.position.fixed_position = this->owner_position.has_latitude_i;
+      cfg.payload_variant.position.position_broadcast_secs = this->position_broadcast_interval_ / 1000;
+      break;
+    case meshtastic_Config_network_tag:
+      cfg.payload_variant.network.eth_enabled = true;
+      break;
+    case meshtastic_Config_lora_tag:
+      cfg.payload_variant.lora.use_preset = true;
+      cfg.payload_variant.lora.modem_preset = (meshtastic_Config_LoRaConfig_ModemPreset) this->client_preset_;
+      cfg.payload_variant.lora.region = (meshtastic_Config_LoRaConfig_RegionCode) this->client_region_;
+      cfg.payload_variant.lora.hop_limit = this->hop_limit_;
+      cfg.payload_variant.lora.tx_enabled = true;
+      cfg.payload_variant.lora.ignore_mqtt = this->ignore_mqtt_;
+      cfg.payload_variant.lora.config_ok_to_mqtt = this->ok_to_mqtt_;
+      break;
+    case meshtastic_Config_security_tag:
+      memcpy(cfg.payload_variant.security.public_key.bytes, this->owner.public_key.bytes, this->owner.public_key.size);
+      cfg.payload_variant.security.public_key.size = this->owner.public_key.size;
+      break;
+    default:
+      break;
+  }
+}
+
+// Module config: all defaults except MQTT
+void Meshtastic::fill_module_config_(pb_size_t tag, meshtastic_ModuleConfig &mc) {
+  memset(&mc, 0, sizeof(mc));
+  mc.which_payload_variant = tag;
+  if (tag == meshtastic_ModuleConfig_mqtt_tag) {
+    mc.payload_variant.mqtt.enabled = this->mqtt_gateway_;
+    strncpy(mc.payload_variant.mqtt.root, this->mqtt_root_topic_.c_str(), sizeof(mc.payload_variant.mqtt.root) - 1);
+    mc.payload_variant.mqtt.encryption_enabled = true;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Admin messages to this node: answer the get_* requests clients use to read the
+// configuration; changes are refused (the YAML is the configuration).
+// ---------------------------------------------------------------------------
+void Meshtastic::client_handle_admin_(const meshtastic_MeshPacket &p, ClientSession &session) {
+  if (!this->admin_passkey_set_) {
+    for (auto &b : this->admin_passkey_)
+      b = random_uint32() & 0xFF;
+    this->admin_passkey_set_ = true;
+  }
+  auto req = std::make_unique<meshtastic_AdminMessage>();
+  memset(req.get(), 0, sizeof(meshtastic_AdminMessage));
+  meshtastic_Routing_Error err = meshtastic_Routing_Error_NONE;
+  auto resp = std::make_unique<meshtastic_AdminMessage>();
+  memset(resp.get(), 0, sizeof(meshtastic_AdminMessage));
+  bool respond = true;
+
+  if (!pb_decode_from_bytes(p.decoded.payload.bytes, p.decoded.payload.size, &meshtastic_AdminMessage_msg, req.get())) {
+    ESP_LOGW(TAG, "Bad admin message from client");
+    err = meshtastic_Routing_Error_BAD_REQUEST;
+    respond = false;
+  } else {
+    switch (req->which_payload_variant) {
+      case meshtastic_AdminMessage_get_channel_request_tag:
+        resp->which_payload_variant = meshtastic_AdminMessage_get_channel_response_tag;
+        this->fill_channel_((int) req->get_channel_request - 1, resp->get_channel_response);  // sent as index + 1
+        break;
+      case meshtastic_AdminMessage_get_owner_request_tag:
+        resp->which_payload_variant = meshtastic_AdminMessage_get_owner_response_tag;
+        resp->get_owner_response = this->owner;
+        break;
+      case meshtastic_AdminMessage_get_config_request_tag:
+        resp->which_payload_variant = meshtastic_AdminMessage_get_config_response_tag;
+        this->fill_config_((pb_size_t) req->get_config_request + 1, resp->get_config_response);  // enum = tag - 1
+        break;
+      case meshtastic_AdminMessage_get_module_config_request_tag:
+        resp->which_payload_variant = meshtastic_AdminMessage_get_module_config_response_tag;
+        this->fill_module_config_((pb_size_t) req->get_module_config_request + 1, resp->get_module_config_response);
+        break;
+      case meshtastic_AdminMessage_get_device_metadata_request_tag:
+        resp->which_payload_variant = meshtastic_AdminMessage_get_device_metadata_response_tag;
+        this->fill_metadata_(resp->get_device_metadata_response);
+        break;
+      case meshtastic_AdminMessage_get_device_connection_status_request_tag:
+        resp->which_payload_variant = meshtastic_AdminMessage_get_device_connection_status_response_tag;
+        resp->get_device_connection_status_response.has_ethernet = true;
+        resp->get_device_connection_status_response.ethernet.has_status = true;
+        resp->get_device_connection_status_response.ethernet.status.is_connected = true;
+        break;
+      case meshtastic_AdminMessage_set_time_only_tag:
+        respond = false;  // time comes from SNTP; accept silently like a device with RTC
+        break;
+      default:
+        ESP_LOGW(TAG, "Admin request %u refused: settings come from YAML", (unsigned) req->which_payload_variant);
+        err = meshtastic_Routing_Error_NOT_AUTHORIZED;
+        respond = false;
+        break;
+    }
+  }
+
+  if (respond) {
+    memcpy(resp->session_passkey.bytes, this->admin_passkey_, sizeof(this->admin_passkey_));
+    resp->session_passkey.size = sizeof(this->admin_passkey_);
+    auto fr = std::make_unique<meshtastic_FromRadio>();
+    memset(fr.get(), 0, sizeof(meshtastic_FromRadio));
+    fr->which_payload_variant = meshtastic_FromRadio_packet_tag;
+    meshtastic_MeshPacket &out = fr->packet;
+    out.from = this->node_num_;
+    out.to = this->node_num_;
+    out.id = generatePacketId();
+    out.channel = p.channel;
+    out.rx_time = (uint32_t) ::time(nullptr);
+    out.which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    out.decoded.portnum = meshtastic_PortNum_ADMIN_APP;
+    out.decoded.request_id = p.id;
+    out.decoded.payload.size = pb_encode_to_bytes(out.decoded.payload.bytes, sizeof(out.decoded.payload.bytes),
+                                                  &meshtastic_AdminMessage_msg, resp.get());
+    if (out.decoded.payload.size == 0) {
+      ESP_LOGW(TAG, "Admin response %u does not fit", (unsigned) resp->which_payload_variant);
+    } else {
+      this->client_push_(session.packet_q, *fr, 0);
+    }
+  }
+  ESP_LOGD(TAG, "Admin request %u: %s", (unsigned) req->which_payload_variant,
+           respond ? "answered" : (err == meshtastic_Routing_Error_NONE ? "accepted" : "refused"));
+  if (p.want_ack) {
+    std::vector<uint8_t> ack;
+    if (this->client_routing_packet_(p.id, err, ack))
+      this->client_queue_(session.packet_q, std::move(ack), 0);
+  }
+}
+
 void Meshtastic::client_send_config_(uint32_t nonce, ClientSession &session) {
   {
     LockGuard lock(this->client_mutex_);
@@ -335,16 +529,7 @@ void Meshtastic::client_send_config_(uint32_t nonce, ClientSession &session) {
   if (nonce != NONCE_ONLY_NODES) {
     // DeviceMetadata
     reset(meshtastic_FromRadio_metadata_tag);
-    auto &md = fr->metadata;
-    strncpy(md.firmware_version, "2.7.0.esphome", sizeof(md.firmware_version) - 1);
-    md.device_state_version = 24;
-    md.hasEthernet = true;
-#ifdef USE_WIFI
-    md.hasWifi = true;
-#endif
-    md.role = this->owner.role;
-    md.hw_model = this->owner.hw_model;
-    md.hasPKC = true;
+    this->fill_metadata_(fr->metadata);
     this->client_push_(q, *fr, 0);
   }
 
@@ -395,26 +580,7 @@ void Meshtastic::client_send_config_(uint32_t nonce, ClientSession &session) {
     // Channels (always 8)
     for (int i = 0; i < 8; i++) {
       reset(meshtastic_FromRadio_channel_tag);
-      auto &ch = fr->channel;
-      ch.index = i;
-      // settings is always present, also for disabled slots (clients read its fields unconditionally)
-      ch.has_settings = true;
-      ch.settings.has_module_settings = true;
-      if (i < (int) this->channels_.size()) {
-        const Channel &c = this->channels_[i];
-        ch.role = i == 0 ? meshtastic_Channel_Role_PRIMARY : meshtastic_Channel_Role_SECONDARY;
-        ch.has_settings = true;
-        strncpy(ch.settings.name, c.get_name().c_str(), sizeof(ch.settings.name) - 1);
-        const psk_t &psk = c.get_psk_config();
-        ch.settings.psk.size = std::min(psk.size(), sizeof(ch.settings.psk.bytes));
-        memcpy(ch.settings.psk.bytes, psk.data(), ch.settings.psk.size);
-        ch.settings.uplink_enabled = c.get_uplink();
-        ch.settings.downlink_enabled = c.get_downlink();
-        ch.settings.has_module_settings = true;
-        ch.settings.module_settings.position_precision = c.get_position_precision();
-      } else {
-        ch.role = meshtastic_Channel_Role_DISABLED;
-      }
+      this->fill_channel_(i, fr->channel);
       this->client_push_(q, *fr, 0);
     }
 
@@ -425,36 +591,7 @@ void Meshtastic::client_send_config_(uint32_t nonce, ClientSession &session) {
                                      meshtastic_Config_bluetooth_tag, meshtastic_Config_security_tag};
     for (pb_size_t tag : config_tags) {
       reset(meshtastic_FromRadio_config_tag);
-      auto &cfg = fr->config;
-      cfg.which_payload_variant = tag;
-      switch (tag) {
-        case meshtastic_Config_device_tag:
-          cfg.payload_variant.device.role = this->owner.role;
-          cfg.payload_variant.device.node_info_broadcast_secs = this->node_broadcast_interval_ / 1000;
-          break;
-        case meshtastic_Config_position_tag:
-          cfg.payload_variant.position.fixed_position = this->owner_position.has_latitude_i;
-          cfg.payload_variant.position.position_broadcast_secs = this->position_broadcast_interval_ / 1000;
-          break;
-        case meshtastic_Config_network_tag:
-          cfg.payload_variant.network.eth_enabled = true;
-          break;
-        case meshtastic_Config_lora_tag:
-          cfg.payload_variant.lora.use_preset = true;
-          cfg.payload_variant.lora.modem_preset = (meshtastic_Config_LoRaConfig_ModemPreset) this->client_preset_;
-          cfg.payload_variant.lora.region = (meshtastic_Config_LoRaConfig_RegionCode) this->client_region_;
-          cfg.payload_variant.lora.hop_limit = this->hop_limit_;
-          cfg.payload_variant.lora.tx_enabled = true;
-          cfg.payload_variant.lora.ignore_mqtt = this->ignore_mqtt_;
-          cfg.payload_variant.lora.config_ok_to_mqtt = this->ok_to_mqtt_;
-          break;
-        case meshtastic_Config_security_tag:
-          memcpy(cfg.payload_variant.security.public_key.bytes, this->owner.public_key.bytes, this->owner.public_key.size);
-          cfg.payload_variant.security.public_key.size = this->owner.public_key.size;
-          break;
-        default:
-          break;
-      }
+      this->fill_config_(tag, fr->config);
       this->client_push_(q, *fr, 0);
     }
 
@@ -469,12 +606,7 @@ void Meshtastic::client_send_config_(uint32_t nonce, ClientSession &session) {
         meshtastic_ModuleConfig_paxcounter_tag};
     for (pb_size_t tag : module_tags) {
       reset(meshtastic_FromRadio_moduleConfig_tag);
-      fr->moduleConfig.which_payload_variant = tag;
-      if (tag == meshtastic_ModuleConfig_mqtt_tag) {
-        fr->moduleConfig.payload_variant.mqtt.enabled = this->mqtt_gateway_;
-        strncpy(fr->moduleConfig.payload_variant.mqtt.root, this->mqtt_root_topic_.c_str(), sizeof(fr->moduleConfig.payload_variant.mqtt.root) - 1);
-        fr->moduleConfig.payload_variant.mqtt.encryption_enabled = true;
-      }
+      this->fill_module_config_(tag, fr->moduleConfig);
       this->client_push_(q, *fr, 0);
     }
   }

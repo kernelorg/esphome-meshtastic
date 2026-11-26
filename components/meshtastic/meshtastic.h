@@ -281,6 +281,14 @@ class Meshtastic : public Component
   bool client_any_active_();
   void client_push_packet_(const meshtastic_MeshPacket &mp, const meshtastic_Data &decoded);
   void client_push_routing_ack_(PacketId id);
+  bool client_routing_packet_(PacketId id, meshtastic_Routing_Error err, std::vector<uint8_t> &out);
+  void client_handle_admin_(const meshtastic_MeshPacket &p, ClientSession &session);
+  uint8_t admin_passkey_[8] = {0};
+  bool admin_passkey_set_ = false;
+  void fill_metadata_(meshtastic_DeviceMetadata &md);
+  void fill_channel_(int index, meshtastic_Channel &ch);
+  void fill_config_(pb_size_t tag, meshtastic_Config &cfg);
+  void fill_module_config_(pb_size_t tag, meshtastic_ModuleConfig &mc);
   int channel_index_by_hash_(uint8_t hash);
  public:
   // called from the HTTP server task

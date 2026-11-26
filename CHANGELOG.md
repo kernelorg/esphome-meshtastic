@@ -4,6 +4,11 @@
 
 - Actions are registered with `synchronous=True` on ESPHome 2026.11+ (no more warnings);
   older ESPHome versions keep working.
+- Admin messages to the node from clients: `get_channel`, `get_owner`, `get_config`,
+  `get_module_config`, `get_device_metadata` and `get_device_connection_status` are answered
+  (with a session passkey), `set_time_only` is accepted, requests with `want_ack` get a routing
+  ACK; changes (`set_*`, reboot, reset, ...) are refused with `NOT_AUTHORIZED` instead of being
+  dropped silently. The Android app kept reconnecting while waiting for these answers.
 - Fix: the component declares its own sockets (TCP API, HTTP API, UDP bridge) to ESPHome, which
   sizes the lwIP socket limit from them. Before, with `mqtt:` and both client APIs the limit (10)
   was exhausted and lwIP reset new connections on port 4403 (apps kept reconnecting). A failed
