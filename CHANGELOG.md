@@ -6,6 +6,10 @@
   for the Home Assistant Meshtastic integration, `meshtastic --host` and apps; up to 3 clients.
 - Every client (each TCP connection, the HTTP client) has its own FromRadio queue; `client_api.port`
   0 disables the HTTP API.
+- Device telemetry: own DeviceMetrics (battery 101 = external power, uptime, channel_utilization,
+  air_util_tx from LoRa airtime) to the mesh every `telemetry_interval` (default 30 min), to
+  clients every minute and in the node list; last DeviceMetrics of other nodes are kept and sent
+  to clients in the node list.
 - Example `meshtastic-api.yaml`: Ethernet-only node with the client API and Home Assistant entities.
 
 ## v3

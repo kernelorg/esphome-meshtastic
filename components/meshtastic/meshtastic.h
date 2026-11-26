@@ -22,6 +22,7 @@
 
 #include "mesh.pb.h"
 #include "mqtt.pb.h"
+#include "telemetry.pb.h"
 #include "esphome/core/preferences.h"
 #include "esphome/core/helpers.h"
 #include <deque>
@@ -92,6 +93,8 @@ struct Node {
     uint8_t hops_away_ = 0;
     meshtastic_HardwareModel hw_model_ = meshtastic_HardwareModel_UNSET;
     meshtastic_Config_DeviceConfig_Role role_ = meshtastic_Config_DeviceConfig_Role_CLIENT;
+    bool has_device_metrics_ = false;
+    meshtastic_DeviceMetrics device_metrics_ = meshtastic_DeviceMetrics_init_zero;  // last telemetry heard
 };
 
 // Learned public keys, persisted in flash
@@ -282,6 +285,26 @@ class Meshtastic : public Component
   void client_api_put_(const uint8_t *data, size_t len);
   bool client_api_get_(std::vector<uint8_t> &out);
  private:
+  // Own telemetry (DeviceMetrics) and airtime accounting, like Meshtastic AirTime
+  uint8_t lora_sf_ = 0;           // 0 = unknown -> no channel utilization
+  uint32_t lora_bw_hz_ = 0;
+  uint8_t lora_cr_ = 1;           // 1..4 = 4/5..4/8
+  uint16_t lora_preamble_ = 16;
+  uint32_t telemetry_interval_ms_ = 30 * 60 * 1000;
+  static constexpr int CU_PERIODS = 6;    // 6 x 10 s -> channel utilization over the last minute
+  static constexpr int TX_PERIODS = 60;   // 60 x 1 min -> own airtime over the last hour
+  uint32_t cu_ms_[CU_PERIODS] = {0};
+  uint32_t tx_ms_[TX_PERIODS] = {0};
+  uint32_t cu_period_ = 0, tx_period_ = 0;
+  uint32_t airtime_ms_(size_t packet_len);
+  void account_airtime_(uint32_t ms, bool tx);
+  void airtime_rotate_();
+  float channel_utilization_();
+  float air_util_tx_();
+  meshtastic_DeviceMetrics own_device_metrics_();
+  void send_telemetry_(bool mesh);
+  void store_telemetry_(NodeNum from, const meshtastic_Telemetry &t);
+ private:
   void schedule_relay_(const std::vector<uint8_t> &packet, const meshtastic_MeshPacket &mp, float snr);
   void cancel_relay_(NodeNum from, PacketId id);
   void process_relays_();
@@ -330,6 +353,13 @@ class Meshtastic : public Component
     c.set_downlink(downlink);
   };
   void set_mqtt_root_topic(const std::string &t) { this->mqtt_root_topic_ = t; };
+  void set_lora_params(uint8_t sf, uint32_t bw_hz, uint8_t cr, uint16_t preamble) {
+    this->lora_sf_ = sf;
+    this->lora_bw_hz_ = bw_hz;
+    this->lora_cr_ = cr;
+    this->lora_preamble_ = preamble;
+  };
+  void set_telemetry_interval(uint32_t ms) { this->telemetry_interval_ms_ = ms; };
   void set_client_api(uint16_t port, uint16_t tcp_port, uint8_t region, uint8_t preset) {
     this->client_api_port_ = port;
     this->tcp_api_port_ = tcp_port;

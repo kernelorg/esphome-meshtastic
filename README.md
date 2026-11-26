@@ -244,7 +244,8 @@ For additional configuration examples and a complete working setup, see [`meshta
 | `role` | enum | CLIENT_MUTE | `CLIENT_MUTE` (no relaying), `CLIENT` (relay, cancel if another node relays first), `ROUTER` (relay with priority) |
 | `slot_time` | time | 9ms | Contention slot of the LoRa preset (SHORT_FAST: 9 ms), used for the relay delay |
 | `mqtt_root_topic` | string | msh/EU_868 | MQTT gateway root; topics are `<root>/2/e/<channel>/<gateway id>` |
-| `client_api` | map | — | Meshtastic client HTTP API, see below |
+| `client_api` | map | — | Meshtastic client HTTP/TCP API, see below |
+| `telemetry_interval` | time | 30min | Own DeviceMetrics telemetry to the mesh; `0s` = only to connected clients (every minute) |
 | `on_text_message` | automation | — | Text received; variables `from` (uint32), `sender`, `channel` (`""` = direct), `text` |
 | `broadcast_interval` | time | 3h | Node info broadcast interval |
 
@@ -336,6 +337,16 @@ YAML is the configuration). There is no authentication, as on Meshtastic devices
 The hosted client at `https://client.meshtastic.org` cannot reach a plain `http://` device
 (mixed content). Run the web client locally (`docker run -p 8080:8080 ghcr.io/meshtastic/web`)
 or allow insecure content for that site in the browser.
+
+### Device Telemetry
+
+The node reports DeviceMetrics like a Meshtastic device: battery level 101 (external power),
+uptime, channel utilization (share of the last minute the channel was busy, own TX and
+everything received) and air_util_tx (share of the last hour we transmitted). Airtime is
+calculated from the `sx126x`/`sx127x` LoRa settings. It is sent to the mesh every
+`telemetry_interval`, to connected clients every minute and in the node list. The last
+DeviceMetrics heard from other nodes are kept and included in the node list for clients
+(Home Assistant Meshtastic integration sensors).
 
 ### Home Assistant Entities
 

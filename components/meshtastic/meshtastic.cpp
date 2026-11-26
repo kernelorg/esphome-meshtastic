@@ -395,11 +395,18 @@ void Meshtastic::setup() {
     this->set_interval("Owner Position", position_broadcast_interval_, [this] { this->send_our_node_position(NODENUM_BROADCAST, 0, meshtastic_MeshPacket_Priority_BACKGROUND); });
   }
   this->load_learned_nodes_();
+  // Device telemetry: to connected clients every minute, to the mesh every telemetry_interval
+  this->set_interval("Telemetry Clients", 60 * 1000, [this] { this->send_telemetry_(false); });
+  if (this->telemetry_interval_ms_ > 0) {
+    this->telemetry_interval_ms_ = std::max<uint32_t>(this->telemetry_interval_ms_, 5 * 60 * 1000);
+    this->set_interval("Telemetry Mesh", this->telemetry_interval_ms_, [this] { this->send_telemetry_(true); });
+  }
   this->mqtt_setup_();
   this->client_api_setup_();
 }
 
 void Meshtastic::loop() {
+  this->airtime_rotate_();
   this->process_relays_();
   this->client_api_loop_();
 #if defined(USE_SOCKET_IMPL_BSD_SOCKETS) || defined(USE_SOCKET_IMPL_LWIP_SOCKETS)
@@ -499,6 +506,7 @@ bool Meshtastic::transmit_radio_packet(meshtastic_MeshPacket *mp) {
 }
 
 bool Meshtastic::transmit_raw_(const std::vector<uint8_t> &packet) {
+  this->account_airtime_(this->airtime_ms_(packet.size()), true);
 #ifdef USE_SX126X
   if(this->sx126x_) {
     ESP_LOGD(TAG, "transmit packet SX126X");
@@ -1073,6 +1081,7 @@ void Meshtastic::handle_received_packet(meshtastic_MeshPacket &mp) {
       meshtastic_Telemetry telemetry_msg = {};
       if (pb_decode_from_bytes(decodedtmp.payload.bytes, decodedtmp.payload.size, &meshtastic_Telemetry_msg, &telemetry_msg)) {
         ESP_LOGI(TAG, "Telemetry: varinat %d\n", telemetry_msg.which_variant);
+        this->store_telemetry_(mp.from, telemetry_msg);
         if(telemetry_msg.which_variant == meshtastic_Telemetry_environment_metrics_tag) {
           ESP_LOGI(TAG, "Telemetry Env: temperature=%f humidity=%f pressure=%f\n",
             telemetry_msg.variant.environment_metrics.temperature,
@@ -1148,6 +1157,7 @@ void Meshtastic::on_packet(const std::vector<uint8_t> &packet, float rssi, float
   ESP_LOGD(TAG, "on_packet %s", format_hex_pretty(packet, ',', true).c_str());
 
   rx_count_lora++;
+  this->account_airtime_(this->airtime_ms_(packet.size()), false);
   ESP_LOGI("CNT", "rx count lora=%d udp=%d/%d bad=%d", rx_count_lora, rx_count_udp, rx_bad_udp, rx_bad_count);
 
   RadioBuffer radio_buffer;

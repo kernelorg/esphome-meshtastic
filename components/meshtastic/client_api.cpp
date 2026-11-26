@@ -359,6 +359,8 @@ void Meshtastic::client_send_config_(uint32_t nonce, ClientSession &session) {
       fr->node_info.position = this->owner_position;
     }
     fr->node_info.last_heard = (uint32_t) ::time(nullptr);
+    fr->node_info.has_device_metrics = true;
+    fr->node_info.device_metrics = this->own_device_metrics_();
     this->client_push_(q, *fr, 0);
     for (auto &n : this->nodes_) {
       if (n->node_num_ == 0 || n->node_num_ == this->node_num_)
@@ -380,6 +382,8 @@ void Meshtastic::client_send_config_(uint32_t nonce, ClientSession &session) {
       ni.last_heard = n->last_heard_;
       ni.has_hops_away = n->last_heard_ != 0;
       ni.hops_away = n->hops_away_;
+      ni.has_device_metrics = n->has_device_metrics_;
+      ni.device_metrics = n->device_metrics_;
       this->client_push_(q, *fr, 0);
     }
   }

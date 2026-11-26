@@ -62,6 +62,7 @@ CONF_ON_TEXT_MESSAGE = "on_text_message"
 CONF_CLIENT_API = "client_api"
 CONF_PORT = "port"
 CONF_TCP_PORT = "tcp_port"
+CONF_TELEMETRY_INTERVAL = "telemetry_interval"
 CONF_REGION = "region"
 CONF_MODEM_PRESET = "modem_preset"
 
@@ -260,6 +261,10 @@ CONFIG_SCHEMA = cv.All(
                     {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(TextMessageTrigger)}
                 ),
                 cv.Optional(CONF_CLIENT_API): CLIENT_API_SCHEMA,
+                # Own DeviceMetrics telemetry to the mesh (0 = only to connected clients)
+                cv.Optional(
+                    CONF_TELEMETRY_INTERVAL, default="30min"
+                ): cv.positive_time_period_milliseconds,
             }
         )
     ),
@@ -278,6 +283,9 @@ async def to_code(configs):
         if CONF_LORADEVICE in config:
             loradev = await cg.get_variable(config[CONF_LORADEVICE])
             cg.add(var.set_lora(loradev))
+            if params := _lora_params(config[CONF_LORADEVICE]):
+                cg.add(var.set_lora_params(*params))
+        cg.add(var.set_telemetry_interval(config[CONF_TELEMETRY_INTERVAL].total_milliseconds))
 
         cg.add(var.set_hop_limit(config[CONF_HOPLIMIT]))
         cg.add(var.set_role(config[CONF_ROLE]))
@@ -473,6 +481,24 @@ async def send_text_message_action_to_code(config, action_id, template_arg, args
     template_ = await cg.templatable(config[CONF_CHANNEL], args, cg.std_string)
     cg.add(var.set_channel(template_))
     return var
+
+
+def _lora_params(lora_id):
+    """SF, bandwidth (Hz), coding rate (1..4) and preamble of the radio, for airtime accounting."""
+    for domain in ("sx126x", "sx127x"):
+        confs = CORE.config.get(domain, [])
+        for conf in confs if isinstance(confs, list) else [confs]:
+            if conf.get(CONF_ID) != lora_id or str(conf.get("modulation", "LORA")) != "LORA":
+                continue
+            try:
+                sf = int(conf["spreading_factor"])
+                bw = float(str(conf["bandwidth"]).replace("kHz", "").replace("_", ".")) * 1000
+                cr = int(str(conf.get("coding_rate", "CR_4_5"))[-1]) - 4
+                pre = int(conf.get("preamble_size", 8)) or 8
+            except (KeyError, ValueError):
+                return None
+            return sf, int(bw), cr, pre
+    return None
 
 
 def _final_validate(configs):
