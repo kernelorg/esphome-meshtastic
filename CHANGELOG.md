@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The last position heard from other nodes is kept and sent to clients in the node list, so
+  they appear on the apps' maps after reconnecting.
+
 ## v5
 
 - Packet history for clients: every packet received from the mesh is kept in PSRAM

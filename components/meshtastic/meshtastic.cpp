@@ -1040,6 +1040,15 @@ void Meshtastic::handle_received_packet(meshtastic_MeshPacket &mp) {
         lat = position.latitude_i * 1e-7; // Convert from Meshtastic's internal  int32_t format
         lng = position.longitude_i * 1e-7;
         ESP_LOGI(TAG, "Position: lat=%f lng=%f alt=%d\n", lat, lng, position.altitude);
+        if (mp.from != this->node_num_ && position.has_latitude_i && position.has_longitude_i) {
+          Node *pn = get_node_by_num(mp.from);  // kept for the client node list
+          if (pn != nullptr) {
+            pn->position_ = position;
+            if (pn->position_.time == 0)
+              pn->position_.time = mp.rx_time;
+            pn->has_position_ = true;
+          }
+        }
         if(decodedtmp.want_response && mp.to == this->node_num_) {
           send_our_node_position(mp.from, mp.channel, meshtastic_MeshPacket_Priority_RELIABLE);
         }

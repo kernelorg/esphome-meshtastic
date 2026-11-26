@@ -813,6 +813,8 @@ void Meshtastic::client_send_config_(uint32_t nonce, ClientSession &session) {
       ni.hops_away = n->hops_away_;
       ni.has_device_metrics = n->has_device_metrics_;
       ni.device_metrics = n->device_metrics_;
+      ni.has_position = n->has_position_;
+      ni.position = n->position_;
       this->client_push_(q, *fr, 0);
     }
   }

@@ -94,6 +94,8 @@ struct Node {
     uint8_t hops_away_ = 0;
     meshtastic_HardwareModel hw_model_ = meshtastic_HardwareModel_UNSET;
     meshtastic_Config_DeviceConfig_Role role_ = meshtastic_Config_DeviceConfig_Role_CLIENT;
+    bool has_position_ = false;
+    meshtastic_Position position_ = meshtastic_Position_init_zero;  // last position heard
     bool has_device_metrics_ = false;
     meshtastic_DeviceMetrics device_metrics_ = meshtastic_DeviceMetrics_init_zero;  // last telemetry heard
 };
