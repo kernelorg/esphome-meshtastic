@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v5
 
 - Packet history for clients: every packet received from the mesh is kept in PSRAM
   (`client_api.history`, default 1000 packets of up to 512 bytes, max 4000; 32 in internal RAM
@@ -31,6 +31,7 @@
   accept is now logged.
 - Example `meshtastic-api.yaml`: mDNS service `_meshtastic._tcp` so the Meshtastic apps find the
   node on the LAN.
+- README rewritten as usage documentation with a configuration reference; install source tag v5.
 
 ## v4
 

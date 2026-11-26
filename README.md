@@ -2,92 +2,72 @@
 
 ![Platform](https://img.shields.io/badge/platform-ESPHome-green)
 
-A powerful ESPHome component that enables integration of [Meshtastic](https://meshtastic.org/)-compatible LoRa devices with ESPHome, allowing you to create mesh networking IoT devices with text messaging, packet routing, and mesh coordination capabilities.
+An ESPHome component that turns an ESP32 with an SX126x/SX127x LoRa radio into a
+[Meshtastic](https://meshtastic.org/) node: encrypted channels and direct messages, packet
+relaying, position and telemetry, an MQTT gateway, the Meshtastic client APIs (web client,
+Android/iOS apps, `meshtastic` CLI, Home Assistant Meshtastic integration) and Home Assistant
+entities.
 
-
-> Fork of [Andrik45719/esphome-meshtastic](https://github.com/Andrik45719/esphome-meshtastic)
-> with Ethernet-only builds, packet relaying, per-channel position precision, learned node keys,
-> an MQTT gateway, the Meshtastic client APIs (HTTP and TCP port 4403: web client, Home Assistant
-> Meshtastic integration, CLI, apps), device telemetry and Home Assistant entities.
-> Changes per release: [CHANGELOG.md](CHANGELOG.md),
-> [Releases](https://github.com/kernelorg/esphome-meshtastic/releases).
-> Complete example: [meshtastic-api.yaml](meshtastic-api.yaml).
+Fork of [Andrik45719/esphome-meshtastic](https://github.com/Andrik45719/esphome-meshtastic).
+Changes per release: [CHANGELOG.md](CHANGELOG.md) and
+[Releases](https://github.com/kernelorg/esphome-meshtastic/releases).
 
 [![asciicast](https://asciinema.org/a/1041922.svg)](https://asciinema.org/a/1041922)
 
-## What It Does
+## Features
 
-This component transforms your ESP32 microcontroller into a full-featured Meshtastic mesh node. It provides:
-
-- **LoRa Mesh Networking**: Direct integration with SX126x and SX127x LoRa radios for long-range mesh communication
-- **Packet Routing**: Automatic routing and relay of packets through multiple nodes to extend network range
-- **Text Messaging**: Send and receive text messages over the mesh network to specific nodes or channels
-- **UDP Bridge Mode**: Optional bridge between LoRa mesh and UDP network for seamless integration
-- **Position Broadcasting**: Share GPS location data across the mesh network
-- **Multi-Channel Support**: Configure multiple channels with different Pre-Shared Keys (PSKs) for channel-based communication
-- **Public Key Infrastructure (PKI)**: Support for encrypted communications with public/private key pairs
-- **Packet Transport Protocol**: Integration with ESPHome's packet_transport component for advanced IoT applications
-
-## Key Features
-
-✨ **Meshtastic Protocol Support**
-- Compatible with official Meshtastic clients and nodes
-- Support for all Meshtastic port numbers and message types
-- Automatic packet encryption, decryption, and authentication
-- Most Meshtastic features easily implementable through simple YAML configuration
-
-🌐 **Multiple Radio Options**
-- Support for SX126x radios (SX1262, SX1268)
-- Support for SX127x radios
-- Configurable LoRa parameters (frequency, spreading factor, bandwidth, etc.)
-
-📡 **Flexible Connectivity**
-- Native LoRa mesh networking
-- UDP multicast and unicast support for local network integration
-- Bridging between LoRa mesh and UDP networks
-
-🔐 **Security Features**
-- Channel encryption with Pre-Shared Keys (PSK) for secure group communication
-- Private message encryption using Public Key Infrastructure (PKI)
-- Per-node public/private key management
-
-🎛️ **ESPHome Integration**
-- Full automation and trigger support
-- On-packet received triggers with lambda expression support
-- Send packet and text message actions
-- Complete configuration via YAML
+- LoRa mesh node on SX1262/SX1268 and SX1276–SX1279 radios
+- Channels with pre-shared keys, direct messages with public-key encryption (PKI)
+- Packet relaying with `CLIENT` or `ROUTER` role
+- Fixed position with per-channel precision, device telemetry
+- Public keys of other nodes learned from NodeInfo and kept in flash
+- MQTT gateway (uplink/downlink per channel)
+- Meshtastic client APIs: HTTP (web client) and TCP port 4403 (apps, CLI, Home Assistant
+  integration), with a packet history for clients that were offline
+- Home Assistant entities: received text, destination, send; `on_text_message` trigger
+- UDP bridge and `packet_transport` platform
+- Builds with Ethernet only (no `wifi:` needed)
 
 ## Getting Started
 
 ### Requirements
 
-- ESP32 microcontroller with LoRa radio (SX126x or SX127x)
+- ESP32 with an SX126x or SX127x LoRa radio, ESP-IDF framework
 - ESPHome 2026.4 or later
-- Meshtastic mesh network (or create a new one)
+- PSRAM recommended for the client packet history
 
 ### Installation
 
-#### Option 1: External Component (Recommended)
-
-Add to your ESPHome configuration:
-
 ```yaml
 external_components:
-  - source: github://kernelorg/esphome-meshtastic@v4   # pin a release tag
+  - source: github://kernelorg/esphome-meshtastic@v5   # pin a release tag
     components: [meshtastic]
     refresh: 24h
 ```
 
-#### Option 2: Local Component
-
-Clone this repository into your ESPHome `components` directory:
+Or clone the repository and use it as a local component:
 
 ```bash
-git clone https://github.com/kernelorg/esphome-meshtastic.git \
-  ~/.esphome/components/esphome-meshtastic
+git clone https://github.com/kernelorg/esphome-meshtastic.git
 ```
 
-### Basic Configuration Example
+```yaml
+external_components:
+  - source:
+      type: local
+      path: esphome-meshtastic/components
+    components: [meshtastic]
+```
+
+### Examples
+
+- [meshtastic-api.yaml](meshtastic-api.yaml): Ethernet-only Olimex ESP32-PoE2 + Seeed
+  Wio-SX1262 with relaying, telemetry, MQTT gateway on a public broker, HTTP and TCP client API,
+  mDNS for the apps and Home Assistant entities.
+- [meshtastic.yaml](meshtastic.yaml): ESP32-C3 + SX1262 with buttons, `on_packet` handling,
+  UDP bridge and position.
+
+### Minimal Configuration
 
 ```yaml
 esphome:
@@ -98,101 +78,294 @@ esp32:
   framework:
     type: esp-idf
 
-# Configure SPI for LoRa radio
+wifi:                        # or ethernet:, a network component is required
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
 spi:
   clk_pin: GPIO10
   mosi_pin: GPIO7
   miso_pin: GPIO6
 
-# Configure LoRa radio (SX1262 example)
 sx126x:
   id: lora_radio
+  hw_version: sx1262
+  modulation: LORA
   cs_pin: GPIO8
   busy_pin: GPIO4
   dio1_pin: GPIO3
   rst_pin: GPIO5
-  frequency: 433125000
-  spreading_factor: 11
+  rf_switch: true
+  tcxo_voltage: 1_8V
+  frequency: 869525000       # EU_868
+  spreading_factor: 11       # LONG_FAST
   bandwidth: 250_0kHz
   coding_rate: CR_4_5
+  preamble_size: 16
+  sync_value: [0x20, 0xb0]   # Meshtastic sync word
+  crc_enable: true
+  rx_start: true
 
-# Configure Meshtastic component
 meshtastic:
   - id: mesh_node
     lora: lora_radio
-    hw_model: 39  # DIY_V1
+    hw_model: 39             # DIY_V1
     hop_limit: 3
-    
-    # Configure channels
+    role: CLIENT
     channels:
       - name: LongFast
-        psk: "XOLPZHTWzHgykJxZ3pnj10mMJdr8glgblsNGLUIvd1w="
-      - name: Admin
-        psk: "cmF4UzVWbnZWQ0xxZlFyZXBSb2xhaHRNSkI1bFhabzU="
-    
-    # Configure this node
+        psk: "AQ=="          # default key
     nodes:
       - node_number: 0
         name: "My ESPHome Node"
         short_name: "ESPH"
         private_key: !secret node_private_key
         public_key: !secret node_public_key
-    
-    # Handle received packets
-    on_packet:
-      then:
-        - lambda: |-
-            ESP_LOGD("mesh", "Packet from %08X to %08X, port %d", from, to, portnum);
-
-# Send text messages via button press
-button:
-  - platform: template
-    name: "Send Mesh Message"
-    on_press:
-      then:
-        - meshtastic.send_text_message:
-            id: mesh_node
-            channel: LongFast
-            text: "Hello from ESPHome!"
 ```
 
-### Advanced Configuration
+The radio settings must match the mesh: frequency slot, spreading factor, bandwidth and coding
+rate of its modem preset, preamble 16, sync word `0x2B` (`sync_value: [0x20, 0xb0]`).
 
-#### UDP Bridge Mode
+## Configuration Reference
 
-Connect your mesh to a local network:
+### Component
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `id` | ID | required | Component ID |
+| `lora` | ID | — | `sx126x` or `sx127x` component |
+| `hw_model` | int | 59 | Meshtastic hardware model reported in NodeInfo (39 = DIY_V1) |
+| `hop_limit` | int | 7 | Hop limit of packets sent by this node (0–7) |
+| `role` | enum | `CLIENT_MUTE` | `CLIENT_MUTE`: no relaying; `CLIENT`: relay, cancel when another node relays first; `ROUTER`: relay with priority |
+| `slot_time` | time | 9ms | Contention slot of the modem preset, used for the relay delay (SHORT_FAST: 9 ms) |
+| `ignore_mqtt` | bool | true | Drop packets that came through MQTT |
+| `ok_to_mqtt` | bool | false | Allow MQTT gateways to publish this node's packets |
+| `exclude_pki` | bool | false | Build without public-key encryption |
+| `telemetry_interval` | time | 30min | DeviceMetrics to the mesh; `0s` = to connected clients only |
+| `mqtt_root_topic` | string | `msh/EU_868` | MQTT gateway root topic |
+| `channels` | list | — | See [Channels](#channels) |
+| `nodes` | list | — | See [Nodes](#nodes) |
+| `position` | map | — | See [Position](#position) |
+| `client_api` | map | — | See [Client API](#client-api) |
+| `udp` | map | — | See [UDP Bridge](#udp-bridge) |
+| `on_packet` | automation | — | See [Triggers](#triggers) |
+| `on_text_message` | automation | — | See [Triggers](#triggers) |
+
+### Channels
+
+```yaml
+channels:
+  - name: LongFast           # the first channel is the primary channel
+    psk: "AQ=="              # 16/32-byte key in base64; 1 byte: "AQ==" default key, "AA==" no encryption
+    position_precision: 13   # bits of lat/lon on this channel: 32 exact, 16 ≈ 350 m, 13 ≈ 3 km, 0 = no position
+    uplink: false            # MQTT gateway: publish this channel
+    downlink: false          # MQTT gateway: transmit this channel's packets received from MQTT
+```
+
+The channel name is part of the channel hash: it must be exactly the name the mesh uses.
+
+### Nodes
+
+```yaml
+nodes:
+  - node_number: 0           # 0 = this node
+    name: "Full Name"
+    short_name: "SHRT"
+    private_key: !secret node_private_key   # 32 bytes, base64 (Curve25519)
+    public_key: !secret node_public_key
+    broadcast_interval: 3h   # NodeInfo broadcast
+  - node_number: 0x12345678  # other node: pins its public key for direct messages
+    name: "Peer"
+    short_name: "PEER"
+    public_key: "<32-byte base64>"
+```
+
+The node number of this node is derived from the MAC address and shown as `Node Num` in the log.
+
+Keys of other nodes are also learned from their NodeInfo and stored in flash (16 nodes).
+A learned key is never replaced by a different one; keys listed in `nodes:` take precedence.
+A direct message from a node without a known key triggers a NodeInfo request to that node.
+
+### Position
+
+```yaml
+position:
+  latitude: 50.0614
+  longitude: 19.9366
+  altitude: 220
+  broadcast_interval: 1h
+```
+
+The position is broadcast on the primary channel and sent with the precision of that channel.
+Position requests are answered on the channel they arrive on.
+
+### Packet Relaying
 
 ```yaml
 meshtastic:
   - id: mesh_node
-    lora: lora_radio
-    
+    role: CLIENT
+    slot_time: 9ms
+```
+
+With `CLIENT` or `ROUTER` the node rebroadcasts packets that are not from or to itself, have not
+been seen before and have hops left. Packets are forwarded encrypted, so no channel key is
+needed. The delay before rebroadcasting depends on the SNR: weaker signal relays first.
+
+### Device Telemetry
+
+The node sends DeviceMetrics: battery level 101 (external power), uptime, channel utilization
+(share of the last minute the channel was busy) and `air_util_tx` (share of the last hour this
+node transmitted). Airtime is calculated from the radio settings. Telemetry goes to the mesh
+every `telemetry_interval` and to connected clients every minute. The last DeviceMetrics
+received from other nodes are passed to clients in the node list.
+
+### Client API
+
+```yaml
+meshtastic:
+  - id: mesh_node
+    client_api:
+      port: 80               # HTTP API, 0 = off
+      tcp_port: 4403         # TCP API, 0 = off
+      history: 1000          # packets kept for clients, 0 = off
+      region: EU_868         # reported to clients
+      modem_preset: SHORT_FAST
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `port` | 80 | HTTP API (`PUT /api/v1/toradio`, `GET /api/v1/fromradio`) for the Meshtastic web client. Runs its own HTTP server; use another port if `web_server` uses 80 |
+| `tcp_port` | 4403 | TCP stream API for the Android/iOS apps, `meshtastic --host <ip>` and the Home Assistant Meshtastic integration; up to 3 clients |
+| `history` | 1000 | Packets kept for clients (up to 512 bytes each, in PSRAM; 32 without PSRAM), max 4000 |
+| `region` | `EU_868` | Region shown to clients |
+| `modem_preset` | `LONG_FAST` | Modem preset shown to clients |
+
+Clients get the node, the node list, channels and settings, and exchange packets with the mesh,
+including direct messages. Settings are read-only for clients: they come from the YAML, change
+requests are refused.
+
+Every packet received from the mesh is kept in the history and delivered to each client once,
+after it has connected: a client that reconnects from the same IP gets what it missed, a new
+client gets the whole history. The history is kept in RAM until the next reboot.
+
+Give the node a fixed IP address (DHCP reservation), clients connect by address.
+
+**App discovery.** The Meshtastic apps find nodes on the local network by mDNS. Announce the
+service with the ESPHome `mdns:` component:
+
+```yaml
+mdns:
+  services:
+    - service: "_meshtastic"
+      protocol: "_tcp"
+      port: 4403             # = client_api.tcp_port
+      txt:
+        shortname: ESPH      # short_name of this node
+        id: "!xxxxxxxx"      # node id ("Owner ID" in the log)
+        pio_env: esphome
+```
+
+**Web client.** Browsers do not let `https://client.meshtastic.org` connect to an `http://`
+device. Run the web client locally and connect to the node's IP:
+
+```bash
+docker run -p 8080:8080 ghcr.io/meshtastic/web
+```
+
+### Home Assistant
+
+The node can be used from Home Assistant through its ESPHome entities, through the Meshtastic
+integration (HACS) on `client_api.tcp_port`, or both. The integration adds a device per mesh
+node with telemetry sensors, message triggers and notify entities.
+
+ESPHome entities:
+
+```yaml
+text_sensor:
+  - platform: meshtastic
+    type: last_message       # last_message | last_sender | last_channel ("direct" for direct messages)
+    name: "Mesh last message"
+
+select:
+  - platform: meshtastic     # destination: channels, then nodes listed in nodes:
+    name: "Mesh destination"
+
+text:
+  - platform: meshtastic     # setting a value sends it to the selected destination
+    name: "Mesh send"
+```
+
+Every received text message as a Home Assistant event (also when the same text repeats):
+
+```yaml
+meshtastic:
+  - id: mesh_node
+    on_text_message:
+      - homeassistant.event:
+          event: esphome.mesh_text
+          data:
+            sender: !lambda return sender;
+            channel: !lambda return channel;   # "" = direct message
+            text: !lambda return text;
+```
+
+### MQTT Gateway
+
+Set `uplink`/`downlink` on channels and add the `mqtt:` component. Packets are exchanged
+encrypted as Meshtastic `ServiceEnvelope` on `<mqtt_root_topic>/2/e/<channel>/<node id>`.
+
+- Uplink publishes the node's own packets and packets received over LoRa whose sender allows
+  MQTT (`ok_to_mqtt` / "OK to MQTT" on that node).
+- Downlink transmits packets from other gateways on LoRa; it requires `ignore_mqtt: false`.
+- After connecting to the broker the node sends its NodeInfo and position.
+
+On a public broker, publish nothing but Meshtastic packets: disable ESPHome discovery, status
+and log messages and the IP announcement, and give every entity `state_topic: null` (they stay
+available to Home Assistant over the native API):
+
+```yaml
+mqtt:
+  broker: loranet.pl
+  discovery: false
+  discover_ip: false
+  log_topic: null
+  birth_message: null
+  will_message: null
+  shutdown_message: null
+  reboot_timeout: 0s         # keep running when the broker is unreachable
+
+meshtastic:
+  - id: mesh_node
+    mqtt_root_topic: msh/PL
+    ok_to_mqtt: true
+    channels:
+      - name: ShortFast
+        psk: "AQ=="
+        uplink: true
+
+text_sensor:
+  - platform: meshtastic
+    type: last_message
+    name: "Mesh last message"
+    state_topic: null
+```
+
+Set `use_address` (or a DHCP reservation) so the ESPHome dashboard finds the node without MQTT.
+
+### UDP Bridge
+
+```yaml
+meshtastic:
+  - id: mesh_node
     udp:
       addresses:
-        - 192.168.1.100  # UDP server address
+        - 192.168.1.100
       multicast_address: 224.0.0.69
-      bridge_mode: true  # Forward LoRa <-> UDP packets
+      bridge_mode: true      # forward LoRa <-> UDP
 ```
 
-#### Position Broadcasting
-
-Share GPS coordinates with the mesh:
-
-```yaml
-meshtastic:
-  - id: mesh_node
-    lora: lora_radio
-    
-    position:
-      latitude: 50.45
-      longitude: 30.52
-      altitude: 179
-      broadcast_interval: 3h
-```
-
-#### Packet Transport Integration
-
-Use with ESPHome's packet_transport for sensor data relay:
+### Packet Transport
 
 ```yaml
 packet_transport:
@@ -204,304 +377,59 @@ packet_transport:
     update_interval: 30min
 ```
 
-#### Direct Node Messaging
+### Triggers
 
-Send messages directly to specific nodes:
-
-```yaml
-button:
-  - platform: template
-    name: "Send Direct Message"
-    on_press:
-      then:
-        - meshtastic.send_text_message:
-            id: mesh_node
-            to: 848894052  # Node ID
-            text: "Direct message"
-```
-
-### More Usage Examples
-
-For additional configuration examples and a complete working setup, see [`meshtastic.yaml`](meshtastic.yaml) in this repository. It provides a real-world example with:
-- SX1262 LoRa radio configuration
-- Multiple channel setup
-- Node configuration with encryption keys
-- Button actions for sending messages
-- Packet event handling with lambda expressions
-- UDP bridge setup
-- Position broadcasting configuration
-
-## Configuration Reference
-
-### Component Configuration
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `id` | string | required | Component ID |
-| `lora` | string | required | SX126x or SX127x radio component ID |
-| `hw_model` | integer | 39 | Hardware model number (39 = DIY_V1) |
-| `hop_limit` | integer | 7 | Default hop limit for packets (0-7) |
-| `ignore_mqtt` | boolean | true | Ignore MQTT-forwarded packets |
-| `ok_to_mqtt` | boolean | false | Allow forwarding to MQTT |
-| `exclude_pki` | boolean | false | Disable private key infrastructure |
-| `role` | enum | CLIENT_MUTE | `CLIENT_MUTE` (no relaying), `CLIENT` (relay, cancel if another node relays first), `ROUTER` (relay with priority) |
-| `slot_time` | time | 9ms | Contention slot of the LoRa preset (SHORT_FAST: 9 ms), used for the relay delay |
-| `mqtt_root_topic` | string | msh/EU_868 | MQTT gateway root; topics are `<root>/2/e/<channel>/<gateway id>` |
-| `client_api` | map | — | Meshtastic client HTTP/TCP API, see below |
-| `telemetry_interval` | time | 30min | Own DeviceMetrics telemetry to the mesh; `0s` = only to connected clients (every minute) |
-| `on_text_message` | automation | — | Text received; variables `from` (uint32), `sender`, `channel` (`""` = direct), `text` |
-| `broadcast_interval` | time | 3h | Node info broadcast interval |
-
-### Channel Configuration
-
-```yaml
-channels:
-  - name: "Channel Name"
-    psk: "Base64EncodedPSK"  # 16/32-byte key, or 1 byte: "AQ==" default key, "AA==" no encryption
-    position_precision: 13   # bits of lat/lon sent on this channel: 32 exact, 13 ≈ 3 km, 0 = no position
-    uplink: false            # MQTT gateway: publish this channel's packets
-    downlink: false          # MQTT gateway: transmit packets received from MQTT on LoRa
-```
-
-Position is broadcast on the first channel; requests are answered on the channel they arrived on.
-
-### Packet Relaying
-
-With `role: CLIENT` or `ROUTER` the node rebroadcasts LoRa packets like a Meshtastic device:
-packets not from/to this node, not seen before, with `hop_limit > 0` and `next_hop` unset or
-ours. The payload is forwarded still encrypted (no channel key needed), `hop_limit` is
-decremented and `relay_node` set. The delay before rebroadcast is SNR-weighted (weaker signal
-relays first); `CLIENT` cancels a pending relay when another node relays the packet first.
-
-```yaml
-meshtastic:
-  - id: mesh_node
-    role: CLIENT
-    slot_time: 9ms   # SHORT_FAST
-```
-
-### MQTT Gateway
-
-With `uplink`/`downlink` on a channel and the `mqtt:` component configured, the node is a
-Meshtastic MQTT gateway. Packets are exchanged still encrypted as `ServiceEnvelope` protobufs.
-Uplink publishes packets heard on LoRa whose sender set `ok_to_mqtt`, and our own packets.
-Downlink transmits packets of that channel received from other gateways; it requires
-`ignore_mqtt: false`.
-
-Once the broker is connected the node sends its NodeInfo and position, so it appears on MQTT
-maps right away.
-
-On a public broker only Meshtastic packets should be published. Give every entity, internal
-ones included, `state_topic: null`, otherwise ESPHome publishes their states (for example the
-`last_message` text sensor) and subscribes to their command topics there; they stay available to
-Home Assistant over the native API. `discover_ip: false` keeps the node's IP off the broker; set
-`use_address` (or a DHCP reservation) so the ESPHome dashboard does not look for the IP via MQTT.
-
-```yaml
-mqtt:
-  broker: mqtt.example.org
-  username: !secret mqtt_user
-  password: !secret mqtt_password
-  discovery: false
-  discover_ip: false
-  log_topic: null
-  reboot_timeout: 0s       # do not reboot the node when the broker is unreachable
-  birth_message: null      # nothing but Meshtastic packets on a public broker
-  will_message: null
-  shutdown_message: null
-
-text_sensor:
-  - platform: meshtastic
-    type: last_message
-    name: "Mesh last message"
-    state_topic: null
-
-meshtastic:
-  - id: mesh_node
-    mqtt_root_topic: msh/EU_868
-    ignore_mqtt: false
-    channels:
-      - name: LongFast
-        psk: "AQ=="
-        uplink: true
-        downlink: true
-```
-
-### Meshtastic Client API
-
-Complete example: [meshtastic-api.yaml](meshtastic-api.yaml) (Ethernet-only ESP32-PoE2 + SX1262,
-HTTP and TCP client API, telemetry, MQTT gateway, Home Assistant entities).
-
-Implements the two network transports of the Meshtastic clients:
-
-- HTTP (`port`, default 80): `PUT /api/v1/toradio`, `GET /api/v1/fromradio`, used by the
-  Meshtastic web client. It runs its own HTTP server (the ESPHome `web_server` has no `PUT`);
-  choose another port if `web_server` uses 80.
-- TCP (`tcp_port`, default 4403): the stream protocol, see below.
-
-Clients connect by IP, so give the node a fixed address (DHCP reservation).
-
-Every packet received from the mesh is kept in a history (`history` packets of up to 512 bytes,
-in PSRAM) and delivered to each client once, after its config: a client that reconnects (same
-IP) receives what it missed while offline, a new client receives the whole history. The history
-does not survive a reboot. The Meshtastic apps also find nodes
-by mDNS (`_meshtastic._tcp`, TXT `shortname`, `id`, `pio_env`); announce it with the ESPHome
-`mdns:` component as in [meshtastic-api.yaml](meshtastic-api.yaml).
-
-```yaml
-meshtastic:
-  - id: mesh_node
-    client_api:
-      port: 80                # HTTP API (web client), 0 = off
-      tcp_port: 4403          # TCP API, 0 = off
-      history: 1000           # packets kept for clients that were offline (PSRAM), 0 = off
-      region: EU_868          # reported to the client only
-      modem_preset: SHORT_FAST
-```
-
-`tcp_port` serves the Meshtastic stream protocol (frames `0x94 0xC3 <length, 2 bytes big-endian>
-<protobuf>`) used by the Home Assistant Meshtastic integration, `meshtastic --host <ip>` and the
-apps' network connection. Up to 3 TCP clients; each client (and the HTTP client) has its own
-queue, so they do not take packets from each other.
-
-Supported: config download (`want_config`, including nonces 69420/69421), node list, channels,
-text and other packets in both directions, PKI direct messages, ACK when a neighbour relays our
-broadcast. Admin requests that read the configuration (`get_*`) are answered;
-changing settings from the client is refused with `NOT_AUTHORIZED` (the YAML is the
-configuration). There is no authentication, as on Meshtastic devices.
-
-The hosted client at `https://client.meshtastic.org` cannot reach a plain `http://` device
-(mixed content). Run the web client locally (`docker run -p 8080:8080 ghcr.io/meshtastic/web`)
-or allow insecure content for that site in the browser.
-
-### Device Telemetry
-
-The node reports DeviceMetrics like a Meshtastic device: battery level 101 (external power),
-uptime, channel utilization (share of the last minute the channel was busy, own TX and
-everything received) and air_util_tx (share of the last hour we transmitted). Airtime is
-calculated from the `sx126x`/`sx127x` LoRa settings. It is sent to the mesh every
-`telemetry_interval`, to connected clients every minute and in the node list. The last
-DeviceMetrics heard from other nodes are kept and included in the node list for clients
-(Home Assistant Meshtastic integration sensors).
-
-### Home Assistant Entities
-
-Home Assistant can use the node in two ways, also both at once: through these ESPHome entities
-(native API), or through the Meshtastic integration (HACS) over `client_api.tcp_port`, which adds
-a device per mesh node with telemetry sensors, message triggers and notify entities.
-
-```yaml
-meshtastic:
-  - id: mesh_node
-    on_text_message:
-      - homeassistant.event:
-          event: esphome.mesh_text
-          data:
-            sender: !lambda return sender;
-            channel: !lambda return channel;
-            text: !lambda return text;
-
-text_sensor:
-  - platform: meshtastic
-    type: last_message   # last_message | last_sender | last_channel ("direct" for DMs)
-    name: "Mesh last message"
-
-select:
-  - platform: meshtastic   # destination: channels, then nodes from `nodes:`
-    name: "Mesh destination"
-
-text:
-  - platform: meshtastic   # setting the value sends it to the selected destination
-    name: "Mesh send"
-```
-
-`on_text_message` fires for every message, also when the same text repeats; the text sensors
-only change state when the value changes.
-
-### Learned Node Keys
-
-Public keys from received NodeInfo packets are stored in flash (up to 16 nodes, trust on first
-use: a known key is never replaced). Direct (PKI) messages then work without listing the node in
-`nodes:`. On a direct message from an unknown node, our NodeInfo is sent to it with
-`want_response` to obtain its key. Keys in `nodes:` always take precedence.
-
-### Node Configuration
-
-```yaml
-nodes:
-  - node_number: 0  # 0 = this node
-    name: "Full Name"
-    short_name: "SHORT"
-    private_key: !secret my_private_key
-    public_key: !secret my_public_key
-```
-
-### on_packet Trigger
-
-Triggered when a packet is received:
+`on_packet`: every received packet.
 
 ```yaml
 on_packet:
   then:
     - lambda: |-
-        uint32_t from_addr = from;
-        uint32_t to_addr = to;
-        uint32_t port = portnum;
-        const std::vector<uint8_t>& payload = data;
+        ESP_LOGD("mesh", "from %08X to %08X port %d, %u bytes", from, to, portnum, data.size());
 ```
 
-Available variables:
-- `from`: Source node ID (uint32)
-- `to`: Destination node ID (uint32)
-- `portnum`: Port number (uint32)
-- `data`: Payload data (vector<uint8>)
+Variables: `from` (uint32), `to` (uint32), `portnum` (int32), `data` (`std::vector<uint8_t>`).
+
+`on_text_message`: every received text message. Variables: `from` (uint32), `sender`
+(`"!xxxxxxxx (SHORT)"`), `channel` (channel name, `""` for direct messages), `text`.
 
 ### Actions
 
-#### `meshtastic.send_text_message`
-
-Send a text message to a channel or node:
+`meshtastic.send_text_message`:
 
 ```yaml
 - meshtastic.send_text_message:
     id: mesh_node
-    channel: "LongFast"  # Send to channel
+    channel: LongFast        # broadcast on a channel
     text: "Hello"
 
 - meshtastic.send_text_message:
     id: mesh_node
-    to: 848894052  # Send to specific node
-    text: "Direct message"
+    to: 0x12345678           # direct message
+    text: "Hello"
 ```
 
-#### `meshtastic.send_packet`
-
-Send raw binary data:
+`meshtastic.send_packet` sends raw data through `packet_transport`:
 
 ```yaml
 - meshtastic.send_packet:
     id: mesh_node
     data: [0x01, 0x02, 0x03]
-    hop_limit: 3
 ```
 
-## Hardware Compatibility
+## Hardware
 
-### Supported LoRa Radios
+### Radios
 
-- **SX1262** - LoRaWAN module (US, EU, JP frequencies)
-- **SX1268** - LoRaWAN module
-- **SX1276** - Legacy LoRa module
-- **SX1277** - Legacy LoRa module
-- **SX1278** - Legacy LoRa module
-- **SX1279** - Legacy LoRa module
+SX1262, SX1268, SX1276, SX1277, SX1278, SX1279.
 
 ### Tested Boards
 
+- Olimex ESP32-PoE2 (Ethernet) with Seeed Wio-SX1262
 - ESP32-C3-DevKitM-1 with SX1262
 - Generic ESP32 with SX1276
 
-### Pinout Example (ESP32-C3 + SX1262)
+### Wiring Example (ESP32-C3 + SX1262)
 
 ```
 ESP32-C3       SX1262
@@ -516,57 +444,35 @@ GPIO5    ----> RESET
 
 ## Troubleshooting
 
-### Component Not Showing in ESPHome
+**No packets received.** Check frequency, spreading factor, bandwidth, coding rate, preamble and
+sync word against the mesh preset, the antenna and the wiring.
 
-- Ensure you've added the external_components section correctly
-- Check the ESPHome logs for compilation errors
-- Verify your SX126x/SX127x component is properly configured
+**Packets received but not decoded (`No channel found for hash`).** Channel name and key must
+match the mesh exactly; the log shows the hash of every configured channel at boot.
 
-### Packets Not Being Received
+**Direct messages not decrypted (`No public key`).** The sender's key is not known yet. Wait for
+its NodeInfo or list it under `nodes:`.
 
-- Verify LoRa radio parameters match your mesh (frequency, SF, BW, etc.)
-- Check that PSKs match the channel configuration in your mesh
-- Ensure proper antenna connection and LoRa radio wiring
-- Check node_number and channel hash configuration
+**Apps or the Home Assistant integration cannot connect.** Check `TCP API` lines in the log,
+the node's IP address and that client and node are in the same network (mDNS does not cross
+subnets).
 
-### Cannot Send Messages
+**Nothing published to MQTT for another node.** That node must allow MQTT ("OK to MQTT"), and the
+channel needs `uplink: true`.
 
-- Verify the destination node exists in your mesh
-- Check hop_limit is not set to 0
-- Ensure the channel PSK matches the target network
-- Check ESP32 heap memory availability
+## Resources
 
-### Encryption/Decryption Errors
-
-- Verify public/private keys are correctly configured
-- Ensure PKI is not disabled (`exclude_pki: false`)
-- Check that key format is correct (32-byte keys in base64)
-
-## Contributing
-
-Contributions are welcome! To contribute:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/your-feature`)
-3. Commit your changes (`git commit -am 'Add feature'`)
-4. Push to the branch (`git push origin feature/your-feature`)
-5. Open a Pull Request
-
-## Support & Resources
-
-- **Meshtastic Official Site**: https://meshtastic.org/
-- **ESPHome Documentation**: https://esphome.io/
-- **GitHub Issues**: Report bugs or request features on [GitHub](https://github.com/kernelorg/esphome-meshtastic/issues)
-- **Meshtastic Discord**: Join the community at https://discord.gg/g9Hgv9KX (Meshtastic community)
+- [Meshtastic](https://meshtastic.org/)
+- [ESPHome](https://esphome.io/)
 
 ## Maintainer
 
-**kernelorg** - [@kernelorg](https://github.com/kernelorg) (this fork)
+**kernelorg** — [@kernelorg](https://github.com/kernelorg)
 
-Original component by **Andrik45719** - [@Andrik45719](https://github.com/Andrik45719)
+Original component by **Andrik45719** — [@Andrik45719](https://github.com/Andrik45719)
 
 ## Acknowledgments
 
-- [Meshtastic Project](https://github.com/meshtastic/firmware) for the mesh networking protocol
-- [ESPHome Project](https://github.com/esphome/esphome) for the framework
-- [NanoPB](https://github.com/nanopb/nanopb) for Protocol Buffer support
+- [Meshtastic](https://github.com/meshtastic/firmware) for the mesh protocol
+- [ESPHome](https://github.com/esphome/esphome) for the framework
+- [nanopb](https://github.com/nanopb/nanopb) for Protocol Buffers

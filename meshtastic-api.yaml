@@ -81,7 +81,7 @@ mqtt:
   reboot_timeout: 0s       # never reboot the node when the broker is unreachable
 
 external_components:
-  - source: github://kernelorg/esphome-meshtastic@v4
+  - source: github://kernelorg/esphome-meshtastic@v5
     components: [meshtastic]
     refresh: 24h
 
