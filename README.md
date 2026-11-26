@@ -339,7 +339,9 @@ Implements the two network transports of the Meshtastic clients:
   choose another port if `web_server` uses 80.
 - TCP (`tcp_port`, default 4403): the stream protocol, see below.
 
-Clients connect by IP, so give the node a fixed address (DHCP reservation).
+Clients connect by IP, so give the node a fixed address (DHCP reservation). The Meshtastic apps also find nodes
+by mDNS (`_meshtastic._tcp`, TXT `shortname`, `id`, `pio_env`); announce it with the ESPHome
+`mdns:` component as in [meshtastic-api.yaml](meshtastic-api.yaml).
 
 ```yaml
 meshtastic:

@@ -51,6 +51,18 @@ ethernet:
     number: GPIO12
     ignore_strapping_warning: true
 
+# Let the Meshtastic apps find the node on the LAN (they browse _meshtastic._tcp, like on
+# Meshtastic devices). mDNS stays within one subnet/VLAN.
+mdns:
+  services:
+    - service: "_meshtastic"
+      protocol: "_tcp"
+      port: 4403             # = client_api.tcp_port
+      txt:
+        shortname: ESPH      # = short_name of node 0
+        id: "!xxxxxxxx"      # node id, see "Owner ID" in the log
+        pio_env: esphome
+
 time:
   - platform: sntp
 

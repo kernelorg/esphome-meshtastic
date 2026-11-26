@@ -4,6 +4,8 @@
 
 - Actions are registered with `synchronous=True` on ESPHome 2026.11+ (no more warnings);
   older ESPHome versions keep working.
+- Example `meshtastic-api.yaml`: mDNS service `_meshtastic._tcp` so the Meshtastic apps find the
+  node on the LAN.
 
 ## v4
 
