@@ -613,8 +613,17 @@ void Meshtastic::tcp_api_loop_() {
     struct sockaddr_in peer {};
     socklen_t plen = sizeof(peer);
     int fd = lwip_accept(this->tcp_listen_fd_, (struct sockaddr *) &peer, &plen);
-    if (fd < 0)
+    if (fd < 0) {
+      if (errno != EAGAIN && errno != EWOULDBLOCK) {
+        static uint32_t last_warn = 0;
+        if (millis() - last_warn > 10000) {
+          last_warn = millis();
+          ESP_LOGW(TAG, "TCP API: accept failed (errno %d)%s", errno,
+                   errno == ENFILE || errno == EMFILE ? ", out of sockets" : "");
+        }
+      }
       break;
+    }
     if (this->tcp_clients_.size() >= TCP_MAX_CLIENTS) {
       ESP_LOGW(TAG, "TCP API: too many clients, refusing %s", inet_ntoa(peer.sin_addr));
       lwip_close(fd);
@@ -721,6 +730,7 @@ void Meshtastic::client_api_setup_() {
   cfg.server_port = this->client_api_port_;
   cfg.ctrl_port = 32768 + 17;  // must differ from the ESPHome web server's control port
   cfg.max_uri_handlers = 6;
+  cfg.max_open_sockets = 3;  // declared to ESPHome in __init__.py (HTTP_API_MAX_OPEN)
   cfg.lru_purge_enable = true;
   cfg.stack_size = 6144;
   httpd_handle_t server = nullptr;

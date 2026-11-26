@@ -4,6 +4,10 @@
 
 - Actions are registered with `synchronous=True` on ESPHome 2026.11+ (no more warnings);
   older ESPHome versions keep working.
+- Fix: the component declares its own sockets (TCP API, HTTP API, UDP bridge) to ESPHome, which
+  sizes the lwIP socket limit from them. Before, with `mqtt:` and both client APIs the limit (10)
+  was exhausted and lwIP reset new connections on port 4403 (apps kept reconnecting). A failed
+  accept is now logged.
 - Example `meshtastic-api.yaml`: mDNS service `_meshtastic._tcp` so the Meshtastic apps find the
   node on the LAN.
 

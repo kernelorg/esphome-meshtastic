@@ -269,6 +269,7 @@ CONFIG_SCHEMA = cv.All(
             }
         )
     ),
+    lambda configs: [_consume_sockets(c) for c in configs],
 )
 
 
@@ -492,6 +493,32 @@ async def send_text_message_action_to_code(config, action_id, template_arg, args
     template_ = await cg.templatable(config[CONF_CHANNEL], args, cg.std_string)
     cg.add(var.set_channel(template_))
     return var
+
+
+# Sockets the component opens itself. ESPHome 2026.x sizes CONFIG_LWIP_MAX_SOCKETS from what
+# components declare; undeclared sockets make lwIP reset new connections (e.g. on port 4403).
+TCP_API_MAX_CLIENTS = 3  # keep in sync with TCP_MAX_CLIENTS in client_api.cpp
+HTTP_API_MAX_OPEN = 3  # keep in sync with max_open_sockets in client_api.cpp
+
+
+def _consume_sockets(config):
+    try:
+        from esphome.components import socket as esp_socket
+
+        consume, kind = esp_socket.consume_sockets, esp_socket.SocketType
+    except (ImportError, AttributeError):  # older ESPHome: fixed socket limit
+        return config
+    if api := config.get(CONF_CLIENT_API):
+        if api[CONF_TCP_PORT]:
+            consume(1, "meshtastic_tcp_api", kind.TCP_LISTEN)(config)
+            consume(TCP_API_MAX_CLIENTS, "meshtastic_tcp_api", kind.TCP)(config)
+        if api[CONF_PORT]:
+            consume(1, "meshtastic_http_api", kind.TCP_LISTEN)(config)
+            consume(HTTP_API_MAX_OPEN, "meshtastic_http_api", kind.TCP)(config)
+            consume(1, "meshtastic_http_api", kind.UDP)(config)  # httpd control socket
+    if CONF_UDP in config:
+        consume(2, "meshtastic_udp", kind.UDP)(config)  # broadcast + listen
+    return config
 
 
 def _lora_params(lora_id):
