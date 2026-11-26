@@ -357,6 +357,9 @@ void Meshtastic::client_send_config_(uint32_t nonce, ClientSession &session) {
     if (this->owner_position.has_latitude_i) {
       fr->node_info.has_position = true;
       fr->node_info.position = this->owner_position;
+      fr->node_info.position.time = (uint32_t) ::time(nullptr);  // fixed position: valid now
+      fr->node_info.position.precision_bits =
+          this->channels_.empty() ? 32 : this->channels_.front().get_position_precision();
     }
     fr->node_info.last_heard = (uint32_t) ::time(nullptr);
     fr->node_info.has_device_metrics = true;
