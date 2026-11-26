@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Actions are registered with `synchronous=True` on ESPHome 2026.11+ (no more warnings);
+  older ESPHome versions keep working.
+
 ## v4
 
 - Meshtastic TCP API: `client_api.tcp_port` (default 4403, 0 = off) serves the stream protocol

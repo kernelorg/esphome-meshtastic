@@ -1,4 +1,5 @@
 import base64
+import inspect
 import esphome.codegen as cg
 import esphome.config_validation as cv
 import re
@@ -435,8 +436,17 @@ SEND_PACKET_ACTION_SCHEMA = cv.maybe_simple_value(
 )
 
 
+# ESPHome 2026.11+ wants synchronous= on every action; older versions do not know the argument.
+# Both actions send right away in play(), so they are synchronous.
+_ACTION_KWARGS = (
+    {"synchronous": True}
+    if "synchronous" in inspect.signature(automation.register_action).parameters
+    else {}
+)
+
+
 @automation.register_action(
-    "meshtastic.send_packet", SendPacketAction, SEND_PACKET_ACTION_SCHEMA
+    "meshtastic.send_packet", SendPacketAction, SEND_PACKET_ACTION_SCHEMA, **_ACTION_KWARGS
 )
 async def send_packet_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
@@ -470,6 +480,7 @@ SEND_TEXT_MESSAGE_ACTION_SCHEMA = cv.maybe_simple_value(
     "meshtastic.send_text_message",
     SendTextMessageAction,
     SEND_TEXT_MESSAGE_ACTION_SCHEMA,
+    **_ACTION_KWARGS,
 )
 async def send_text_message_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
